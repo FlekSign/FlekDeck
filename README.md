@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="217" height="217" src="https://fleksign.com/_astro/fleklauncher-logo.CboELLP8_eUcyq.webp" alt="FlekDeck icon">
+  <img width="217" height="217" src=".github/assets/flekdeck-icon.png" alt="FlekDeck icon">
 </div>
 
 <div align="center">
