@@ -22,5 +22,18 @@ API_AVAILABLE(ios(16.0))
 - (BOOL)isPiPWithDecoratedVC:(UIViewController*)vc;
 - (void)stopPiP;
 - (void)startPiPWithVC:(AppSceneViewController*)vc;
+/// Readies `vc` to float when LiveContainer is backgrounded, without floating it
+/// now. Only the window in front is ever armed — the system allows one PiP
+/// window, and arming costs nothing, so it is simply kept current.
+- (void)armForVC:(AppSceneViewController*)vc;
+/// Drops the armed controller. A window that is actually floating is left alone.
+- (void)disarmIfInactive;
+/// `disarmIfInactive`, but only when it is `vc` that is armed — for a window on
+/// its way out, which must not take another window's readiness with it.
+- (void)disarmIfInactiveForVC:(AppSceneViewController*)vc;
+/// Builds the armed controller again for `vc`, because what it should be built
+/// around has changed — the guest reporting it has a video, which decides whether
+/// leaving FlekDeck floats the video or the whole window.
+- (void)rearmForVC:(AppSceneViewController*)vc;
 
 @end

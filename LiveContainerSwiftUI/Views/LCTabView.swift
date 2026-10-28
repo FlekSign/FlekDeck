@@ -13,7 +13,6 @@ struct LCTabView: View {
     @State var errorShow = false
     @State var crashReportShow = false
     @State var errorInfo = ""
-    @State private var isiOSBeta = false
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
     
     @State var previousSelectedTab : LCTabIdentifier = .apps
@@ -56,9 +55,17 @@ struct LCTabView: View {
                 .padding(.horizontal)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("lc.common.copy".loc, action: {
-                            copyError()
-                        })
+                        if #available(iOS 16.0, *) {
+                            if let log = UserDefaults.lcShared().url(forKey: "LC32BitTranslationLayerLogFile") {
+                                ShareLink(item: log)
+                            } else {
+                                ShareLink(item: errorInfo)
+                            }
+                        } else {
+                            Button("lc.common.copy".loc) {
+                                copyError()
+                            }
+                        }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("lc.common.ok".loc, action: {
@@ -73,6 +80,9 @@ struct LCTabView: View {
         .task {
             setupInitialRepositoriesIfNeeded()
             Task { await MultiRepoSearchModel.prefetchAllRepos() }
+            // Mobile Data that the FlekJIT shortcut switched off for a launch
+            // which never got as far as switching it back on.
+            FlekMobileDataShortcut.shared.turnMobileDataBackOn()
             runStartupIfNeeded()
         }
         .onReceive(pub) { out in
@@ -99,6 +109,10 @@ struct LCTabView: View {
     }
     
     func dispatchURL(url: URL) {
+        // The FlekJIT shortcut's way back, which is not a link to act on.
+        if FlekMobileDataShortcut.shared.handle(url) {
+            return
+        }
         repeat {
             if url.isFileURL {
                 sharedModel.selectedTab = .apps
@@ -275,30 +289,13 @@ struct LCTabView: View {
         checkAndSaveBundleId()
         checkGetTaskAllow()
         checkPrivateContainerBookmark()
-        checkiOSBeta()
+        updateBetaOverlay()
         processPendingURLIfNeeded()
     }
 
-    func checkiOSBeta() {
-        // Beta iOS builds have a build version ending with a lowercase letter (e.g. 22A5307f)
-        if let buildVersion = UIDevice.current.buildVersion,
-           let lastChar = buildVersion.last,
-           lastChar.isLowercase {
-            isiOSBeta = true
-        }
-        updateBetaOverlay()
-    }
-
     private func updateBetaOverlay() {
-        let shouldShow: Bool
-        switch betaBannerOverride {
-        case 1: shouldShow = true
-        case 2: shouldShow = false
-        default: shouldShow = isiOSBeta
-        }
-
         if let scene = sceneDelegate.window?.windowScene {
-            if shouldShow {
+            if BetaOverlayManager.isEnabled(override: betaBannerOverride) {
                 BetaOverlayManager.shared.show(on: scene)
             } else {
                 BetaOverlayManager.shared.hide()

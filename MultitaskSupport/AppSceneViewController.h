@@ -13,6 +13,20 @@
 
 @class AppSceneViewController;
 
+/// The files a private app is staged into the app group with, for as long as it
+/// runs in a window. Only closing the window brings them back, so a FlekDeck
+/// killed with windows open leaves them behind.
+@interface LCWindowStaging : NSObject
+/// Settles the data containers those windows left staged, keeping whichever copy
+/// holds the later session — a few seconds later, so that a window opened
+/// meanwhile can take its copy over — and drops the staged bundle and tweak
+/// copies. Also
+/// clears the copies builds before the staging folder left among the shared
+/// apps, where they were listed as a second, shared copy of the app. Call once
+/// at launch, before the app list is read.
++ (void)recoverAfterLaunch;
+@end
+
 API_AVAILABLE(ios(16.0))
 @protocol AppSceneViewControllerDelegate <NSObject>
 - (void)appSceneVCAppDidExit:(AppSceneViewController*)vc;
@@ -63,5 +77,32 @@ API_AVAILABLE(ios(16.0))
 - (void)openURLScheme:(NSString *)urlString;
 - (void)handleStatusBarTapAction:(UIAction *)action;
 - (BOOL)usesHostingControllerAPI;
+/// The CAContext the guest publishes its video into when it asks to float, or 0
+/// if it did not manage to. Hosting this rather than the guest's whole scene is
+/// what puts the video, and nothing around it, in the PiP window.
+@property(nonatomic) uint32_t guestVideoContextId;
+/// The size of the whole published context.
+@property(nonatomic) CGSize guestVideoSize;
+/// Where the picture sits inside that context. What AVKit hands the guest as its
+/// PiP source is a container, with the video somewhere below it at whatever size
+/// the app's layout gave it — so hosting the context whole puts a small picture
+/// in the corner of a large empty window. The host clips to this instead.
+@property(nonatomic) CGRect guestVideoRect;
+/// Tells the guest to take its video layer back. It is out of the app's own tree
+/// for as long as the window is floating, and PiP usually ends by a route the app
+/// hears nothing about.
+- (void)notifyGuestPiPEnded;
+/// Tells the guest the float has actually begun, which is when the app may be
+/// told its PiP started. Told any earlier, the app replaces its video with a
+/// placeholder for a window that may never appear.
+- (void)notifyGuestPiPStarted;
+/// Asks the guest to publish its video and float, for a window that is leaving
+/// the stage while LiveContainer itself stays in front.
+- (void)requestGuestFloat;
+/// Whether the guest has a video it could float, and how big. Known well before
+/// anything floats, because AVKit only starts a controller that already existed
+/// when the app backgrounded — so the armed controller has to be the
+/// video-shaped one from the moment the guest has a video at all.
+@property(nonatomic) BOOL guestHasVideo;
 @end
 

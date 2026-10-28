@@ -8,3 +8,7 @@
 #include "Global.xcconfig"
 
 PRODUCT_BUNDLE_IDENTIFIER = $(LIVECONTAINER_BUNDLE_IDENTIFIER)
+
+// StikJIT and the pairing library ship for devices only, so a Simulator build
+// embeds neither.
+EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*] = StikJIT.framework IdevicePairing.dylib

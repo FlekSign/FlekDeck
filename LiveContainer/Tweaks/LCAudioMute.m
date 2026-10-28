@@ -678,6 +678,10 @@ static float lcIntendedVolume(id object, SEL getter) {
     return current;
 }
 
+// The app's own mute switch, recorded the same way — and it has to be recorded
+// before silence forces the switch on. Read for the first time afterwards, it
+// takes our YES for the app's choice, and the object stays muted at every level
+// from then on.
 static BOOL lcIntendedMuted(id object) {
     NSNumber *stored = objc_getAssociatedObject(object, kIntendedMutedKey);
     if(stored) return stored.boolValue;
@@ -699,7 +703,12 @@ static void lcApplyGainToPlayer(id player, float gain) {
     // enough, but at full silence both are set: it costs nothing, and it covers
     // a route that honours one and ignores the other.
     if(orig_AVPlayer_setMuted) {
-        orig_AVPlayer_setMuted(player, @selector(setMuted:), gain <= 0.0f ? YES : lcIntendedMuted(player));
+        // Read even at silence, where it goes unused: the mute button jumps
+        // straight to zero, so a tap is often the first time this player is
+        // touched at all. A slider drag passes through some level on the way
+        // down, which is the only reason that route never lost the sound.
+        BOOL appMuted = lcIntendedMuted(player);
+        orig_AVPlayer_setMuted(player, @selector(setMuted:), gain <= 0.0f ? YES : appMuted);
     }
 }
 
@@ -724,7 +733,9 @@ static void lcApplyGainToSampleBufferRenderer(id renderer, float gain) {
         orig_AVSampleBufferAudioRenderer_setVolume(renderer, @selector(setVolume:), lcIntendedVolume(renderer, @selector(volume)) * gain);
     }
     if(orig_AVSampleBufferAudioRenderer_setMuted) {
-        orig_AVSampleBufferAudioRenderer_setMuted(renderer, @selector(setMuted:), gain <= 0.0f ? YES : lcIntendedMuted(renderer));
+        // Read before forcing it on, as for AVPlayer above.
+        BOOL appMuted = lcIntendedMuted(renderer);
+        orig_AVSampleBufferAudioRenderer_setMuted(renderer, @selector(setMuted:), gain <= 0.0f ? YES : appMuted);
     }
 }
 

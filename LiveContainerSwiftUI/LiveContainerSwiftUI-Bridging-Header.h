@@ -9,6 +9,8 @@
 #include "LCAppInfo.h"
 #include "../LiveContainer/LCSharedUtils.h"
 #include "Utilities/LCUtils.h"
+#include "Utilities/LCPermittedTaskIdentifier.h"
+#include "Utilities/LCDevicePairing.h"
 #include "Utilities/unarchive.h"
 #include "../MultitaskSupport/AppSceneViewController.h"
 #include "../MultitaskSupport/LCGuestVolume.h"

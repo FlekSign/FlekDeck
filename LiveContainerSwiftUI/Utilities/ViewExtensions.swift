@@ -59,6 +59,16 @@ extension View {
             perform: { _ in f() }
         )
     }
+
+    /// Leaves the view out altogether unless `condition` holds. Unlike
+    /// `hidden()`, which keeps the view's space, this drops a Form row or a
+    /// whole section.
+    @ViewBuilder
+    func shown(if condition: Bool) -> some View {
+        if condition {
+            self
+        }
+    }
     
     func rainbow() -> some View {
         self.modifier(RainbowAnimation())

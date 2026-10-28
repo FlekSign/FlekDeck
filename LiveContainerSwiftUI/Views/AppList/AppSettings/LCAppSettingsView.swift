@@ -147,28 +147,22 @@ struct LCAppSettingsView: View {
                 Toggle(isOn: $model.uiIsJITNeeded) {
                     Text("lc.appSettings.launchWithJit".loc)
                 }
-                if #available(iOS 26.0, *), model.uiIsJITNeeded {
-                    HStack {
-                        Text("lc.appSettings.jit26.script".loc)
-                        Spacer()
-                        if let base64String = model.jitLaunchScriptJs, !base64String.isEmpty {
-                            // Show a generic name since we're not storing the filename
-                            Text("lc.appSettings.jit26.scriptLoaded".loc)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .foregroundColor(.primary)
-
-                            Button(action: {
-                                model.jitLaunchScriptJs = nil
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
-                            }
-                            .buttonStyle(BorderlessButtonStyle())
-                        } else {
-                            Text("No file selected")
-                                .foregroundColor(.gray)
+                .disabled(model.uiIs32bit)
+                if #available(iOS 26.0, *), model.uiIsJITNeeded, !model.uiIs32bit {
+                    let isBuiltinScript = model.jitLaunchScriptJs?.hasPrefix("/") ?? true
+                        Picker(selection: $model.jitLaunchScriptJs) {
+                            // The selection is optional, and a tag only matches
+                            // it as the same type. No script at all leaves the
+                            // choice to the JIT enabler.
+                            Text("lc.common.default".loc).tag(String?.none)
+                            // for compat with other scripts we still have to put the script contents back in
+                            Text("universal.js").tag(String?.some("/Frameworks/StikJIT.framework/universal.js"))
+                            Text("legacy.js").tag(String?.some("/Frameworks/StikJIT.framework/legacy.js"))
+                            Text("Custom").tag(isBuiltinScript ? "" : model.jitLaunchScriptJs)
+                        } label: {
+                            Text("lc.appSettings.jit26.script".loc)
                         }
+                    if !isBuiltinScript {
                         Button(action: {
                             // This will trigger the file picker
                             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.javaScript], asCopy: true)
@@ -190,8 +184,29 @@ struct LCAppSettingsView: View {
                                 rootViewController.present(picker, animated: true)
                             }
                         }) {
-                            Text("lc.common.select".loc)
+                            HStack {
+                                Spacer()
+                                if let base64String = model.jitLaunchScriptJs, !base64String.isEmpty {
+                                    // Show a generic name since we're not storing the filename
+                                    Text("lc.appSettings.jit26.scriptLoaded".loc)
+                                        .foregroundColor(.primary)
+                                } else {
+                                    Text("lc.common.noFileSelected".loc)
+                                        .foregroundColor(.gray)
+                                }
+                                Text("lc.common.select".loc)
+                            }
                         }
+                    }
+                }
+                if model.uiIs32bit {
+                    Picker(selection: $model.uiSelected32BitEmulator) {
+                        ForEach(sharedModel.arm32EmuApps, id: \.self) { app in
+                            Text("lc.common.default".loc).tag("")
+                            Text(app.appInfo.displayName()).tag(app.appInfo.relativeBundlePath!)
+                        }
+                    } label: {
+                        Text("lc.appSettings.selected32BitEmulator".loc)
                     }
                 }
             } footer: {

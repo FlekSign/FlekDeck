@@ -18,6 +18,7 @@ enum JITEnablerType : Int, CaseIterable, Identifiable {
     case SideStore = 4
     case StosDebug = 5
     case StosDebugLC = 6
+    case StikJITHeadless = 7
     
     var displayName: String {
         switch self {
@@ -28,27 +29,25 @@ enum JITEnablerType : Int, CaseIterable, Identifiable {
         case .SideStore: "SideStore"
         case .JITStreamerEBLegacy: "JitStreamer-EB (Relaunch)"
         case .SideJITServer: "SideJITServer/JITStreamer 2.0"
+        case .StikJITHeadless: "FlekJIT (Built-in)"
         }
+    }
+
+    /// Left out of the menu, and still honoured for whoever chose it before.
+    var isNoLongerOffered: Bool {
+        self == .SideStore || self == .JITStreamerEBLegacy
     }
 }
 
 struct LCSettingsView: View {
+    @State private var showBackgroundInstallReport = false
     @State var errorShow = false
     @State var errorInfo = ""
-    @State var successShow = false
-    @State var successInfo = ""
-    
-    
-    
-    
+
     @StateObject private var installLC2Alert = AlertHelper<Int>()
-    @State private var certificateDataFound = false
     
-    @StateObject private var certificateImportAlert = YesNoHelper()
     @StateObject private var certificateImportFromBuiltInSideStoreAlert = YesNoHelper()
     @StateObject private var certificateRemoveAlert = YesNoHelper()
-    @StateObject private var certificateImportFileAlert = AlertHelper<URL>()
-    @StateObject private var certificateImportPasswordAlert = InputHelper()
     
     @AppStorage("LCFrameShortcutIcons") var frameShortIcon = false
     @AppStorage("LCSwitchAppWithoutAsking") var silentSwitchApp = false
@@ -85,27 +84,63 @@ struct LCSettingsView: View {
     
     @AppStorage("LCLoadTweaksToSelf") var injectToLCItelf = false
     @AppStorage("LCIgnoreJITOnLaunch") var ignoreJITOnLaunch = false
-    #if is32BitSupported
-    @AppStorage("selected32BitLayer", store: LCUtils.appGroupUserDefault) var liveExec32Path : String = ""
-    #endif
+    @AppStorage("LCSelected32BitEmulator", store: LCUtils.appGroupUserDefault) var selected32BitEmulator : String = ""
     @AppStorage("LCKeepSelectedWhenQuit") var keepSelectedWhenQuit = false
     @AppStorage("LCWaitForDebugger") var waitForDebugger = false
     @AppStorage("LCSharePrivateDataWithLiveProcess") var sharePrivateDataWithLiveProcess = false
+    @AppStorage("LCOpenPrivateAppsWithoutCopying") var openPrivateAppsWithoutCopying = false
+    @AppStorage("FlekPairWithoutCode") var pairWithoutCode = false
     @AppStorage("BKNoWatchdogs") var disableLiveProcessWatchdog = false
     
+    // What the continued-processing scheduler did with the last install. Whether a
+    // background task was refused, submitted, or ran is invisible from the outside:
+    // all three look like an install that simply stopped when the app went away.
+    @AppStorage("LCBackgroundInstallStatus", store: LCUtils.appGroupUserDefault)
+    private var backgroundInstallStatus: String = ""
+
+    @AppStorage("LCBackgroundInstallDetail", store: LCUtils.appGroupUserDefault)
+    private var backgroundInstallDetail: String = ""
+
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
 
     @EnvironmentObject private var sharedModel : SharedModel
+    
+    /// Read from the shared model, which follows the stored password, so a
+    /// certificate imported anywhere else — at launch, or through a
+    /// flekdeck://certificate link — shows here as well.
     
     @State private var isViewAppeared = false
     
     let storeName = LCUtils.getStoreName()
     
     init() {
-        _certificateDataFound = State(initialValue: LCSharedUtils.certificatePassword() != nil)
         _store = State(initialValue: LCUtils.store())
     }
     
+    private var backgroundInstallDate: Date? {
+        LCUtils.appGroupUserDefault.object(forKey: "LCBackgroundInstallDate") as? Date
+    }
+
+    private var backgroundInstallReport: String {
+        guard !backgroundInstallStatus.isEmpty else {
+            return "No install has asked for background time yet."
+        }
+        var lines = [backgroundInstallStatus]
+        if !backgroundInstallDetail.isEmpty {
+            lines.append(backgroundInstallDetail)
+        }
+        if let date = backgroundInstallDate {
+            lines.append("Recorded \(date.formatted(.relative(presentation: .numeric)))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    // Only "Submitted", "Running" and "Finished" mean the chain is intact; every
+    // other status is a step that refused.
+    private var backgroundInstallIsProblem: Bool {
+        !["", "Submitted", "Running", "Finished"].contains(backgroundInstallStatus)
+    }
+
     /// Name of the step the haptics slider currently sits on, shown beside it —
     /// a strength is easier to recognise by name than by a bare number, and the
     /// left end being "Off" is the part worth being explicit about.
@@ -139,20 +174,20 @@ struct LCSettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                // MARK: - Certificate (shown only when no certificate is detected)
-                if sharedModel.multiLCStatus != 2 && !certificateDataFound {
-                    Section {
-                        Button("lc.settings.importCertificate".loc) {
-                            Task { await importCertificate() }
-                        }
-                    } header: {
-                        Text("lc.settings.jitLess".loc)
-                    } footer: {
-                        Text("lc.settings.jitLessDesc".loc)
-                    }
-                }
                 // MARK: - Categories
                 Section {
+                    // Where the certificate is imported. It carries the red mark
+                    // while there is no certificate, or one that no longer works —
+                    // what the Settings icon on the home screen counts.
+                    NavigationLink { generalPage } label: {
+                        HStack(spacing: 0) {
+                            categoryRow("lc.flek.cat.general".loc, "gear", .gray, iconSize: 20)
+                            if sharedModel.generalNeedsAttention {
+                                Spacer(minLength: 8)
+                                attentionMark
+                            }
+                        }
+                    }
                     NavigationLink { FlekPersonalizationView() } label: {
                         categoryRow("lc.flek.personalization".loc, "paintbrush.fill", .purple)
                     }
@@ -165,10 +200,16 @@ struct LCSettingsView: View {
                         }
                     }
                     NavigationLink { jitPage } label: {
-                        categoryRow("lc.flek.cat.jit".loc, "j.circle", .blue, iconSize: 20)
+                        // The mark an app set to launch with JIT carries on its
+                        // icon, on a dark tile.
+                        categoryRow("lc.flek.cat.jit".loc, FlekSymbol.jit, .black)
                     }
-                    NavigationLink { contentRestrictionsPage } label: {
-                        categoryRow("lc.flek.cat.content".loc, "nosign", .red, iconSize: 20)
+                    // Strict hiding is all this page holds, and it applies only
+                    // while hidden apps are unlocked.
+                    if sharedModel.isHiddenAppUnlocked {
+                        NavigationLink { contentRestrictionsPage } label: {
+                            categoryRow("lc.flek.cat.content".loc, "nosign", .red, iconSize: 20)
+                        }
                     }
                     NavigationLink { signingPage } label: {
                         categoryRow("lc.flek.cat.signing".loc, "signature", .mint, iconSize: 15)
@@ -176,17 +217,26 @@ struct LCSettingsView: View {
                     NavigationLink { LCTweaksView() } label: {
                         categoryRow("Tweaks", "wrench.and.screwdriver.fill", .orange, iconSize: 17)
                     }
+                    NavigationLink { FlekAboutView() } label: {
+                        categoryRow("lc.flek.cat.about".loc, "info.circle", .gray, iconSize: 20)
+                    }
                 }
                 Section {
-                    linkRow("FleksignIcon", "FlekSign.com", action: openFleksign)
                     linkRow("GitHub", "GitHub - LiveContainer", action: openGitHub)
+                    linkRow("GitHub", "lc.flek.sourceCode".loc, action: openFlekDeckRepo)
                     linkRow("Twitter", "khanhduytran0", action: openTwitter)
                     linkRow("GitHub", "GitHub - Huge_Black", action: openGitHub2)
                 } footer: {
+                    // Centred so it closes the page with the version and build lines
+                    // below it, rather than trailing off to one side of them. A Text
+                    // sizes to its content, so it takes the full width first and
+                    // centres what it wraps onto a second line.
                     Text("lc.settings.warning".loc)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
                 
-                VStack(alignment: .leading, spacing: 2){
+                VStack(spacing: 2){
                     Text(LCUtils.getVersionInfo())
                         .foregroundStyle(.gray)
                         // The branch and hash make this long enough to wrap in the
@@ -194,7 +244,10 @@ struct LCSettingsView: View {
                         // and shrinking only once that is not enough either.
                         .lineLimit(2)
                         .minimumScaleFactor(0.5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.center)
+                        // Filling the width gives the five-tap developer-mode gesture
+                        // the whole line to land on, not just the glyphs.
+                        .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 5) {
                             sharedModel.developerMode = true
@@ -210,9 +263,6 @@ struct LCSettingsView: View {
                             .contentShape(Rectangle())
                             .onTapGesture(perform: openFleksign)
                     }
-                    // Centred on its own, against a version line that fills the width
-                    // to sit leading. The stack's own alignment cannot do both.
-                    .frame(maxWidth: .infinity)
                     // The size this line has always been. Only the version below the
                     // footer was meant to match it, and a font set here is nearer the
                     // text than the one on the stack, so it is the one that lands.
@@ -222,17 +272,16 @@ struct LCSettingsView: View {
                 .font(.footnote)
                 // Line up with the footer above rather than with the cards: a row is
                 // kept 20pt clear of each window edge, and a section footer a further
-                // 20pt inside that. Leading, for the same reason — a matching margin
-                // reads as one only if both start at the same edge. The padding sits
-                // within the frame so the background still covers the whole row —
-                // inset the row itself and the cell's own card colour shows along
-                // both edges.
+                // 20pt inside that, so a long version string wraps where the warning
+                // does. The padding sits within the frame so the background still
+                // covers the whole row — inset the row itself and the cell's own card
+                // colour shows along both edges.
                 .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(UIColor.systemGroupedBackground))
                 .listRowInsets(EdgeInsets())
 
-                if isBetaiOS {
+                if BetaOverlayManager.isBetaiOS {
                     Section {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -252,6 +301,54 @@ struct LCSettingsView: View {
                 }
 
                 if sharedModel.developerMode {
+                    // Developer-only diagnostics, which mean nothing to anyone not
+                    // chasing the problem each one was made for.
+                    Section {
+                        // MARK: - Background install
+                        // Whether the last install got background time, and if not,
+                        // which step said no.
+                        HStack(spacing: 12) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.teal)
+                                .cornerRadius(8)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Background Install")
+                                    .font(.body)
+
+                                Text(backgroundInstallStatus.isEmpty ? "Never asked" : backgroundInstallStatus)
+                                    .font(.subheadline)
+                                    .foregroundColor(backgroundInstallIsProblem ? .orange : .secondary)
+
+                                if !backgroundInstallDetail.isEmpty {
+                                    Text(backgroundInstallDetail)
+                                        .font(.caption)
+                                        .foregroundColor(backgroundInstallIsProblem ? .orange : .secondary)
+                                        .lineLimit(2)
+                                        .minimumScaleFactor(0.8)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            UIPasteboard.general.string = backgroundInstallReport
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            showBackgroundInstallReport = true
+                        }
+                        .alert("Background Install", isPresented: $showBackgroundInstallReport) {
+                            Button("OK", role: .cancel) {}
+                        } message: {
+                            Text("\(backgroundInstallReport)\n\nCopied to clipboard.")
+                        }
+
+                    } header: {
+                        Text("Diagnostics")
+                    }
                     Section {
                         if #available(iOS 16.1, *) {
                             Toggle(isOn: $showRotationPanel) {
@@ -281,8 +378,22 @@ struct LCSettingsView: View {
                         Toggle(isOn: $sharePrivateDataWithLiveProcess) {
                             Text("Allow Private Data access from LiveProcess")
                         }
+                        // Hands a private app to its window through bookmarks, as
+                        // upstream does, instead of staging a copy into the app
+                        // group. There to test whether bookmarks open on a given
+                        // build and iOS version; see "App group staging" in
+                        // AppSceneViewController.m.
+                        Toggle(isOn: $openPrivateAppsWithoutCopying) {
+                            Text("Open Private Apps in Windows Without Copying")
+                        }
                         Toggle(isOn: $disableLiveProcessWatchdog) {
                             Text("Disable LiveProcess watchdog termination")
+                        }
+                        // Has "Create on This Device" advertise a pairing that
+                        // asks for no code, to find out whether iOS goes along
+                        // with it. If it asks anyway, the code is 000000.
+                        Toggle(isOn: $pairWithoutCode) {
+                            Text("Create Pairing File Without a Code")
                         }
                         Button {
                             exportDyld()
@@ -312,6 +423,19 @@ struct LCSettingsView: View {
                                 .multilineTextAlignment(.trailing)
                         }
                         #endif
+                        // Upstream puts this picker in its own section at the root of
+                        // Settings. FlekDeck's root is a list of categories, so it lives
+                        // here instead, and only once an emulator is actually installed.
+                        if !sharedModel.arm32EmuApps.isEmpty {
+                            Picker(selection: $selected32BitEmulator) {
+                                Text("lc.common.none".loc).tag("")
+                                ForEach(sharedModel.arm32EmuApps, id: \.self) { app in
+                                    Text(app.appInfo.displayName()).tag(app.appInfo.relativeBundlePath!)
+                                }
+                            } label: {
+                                Text("lc.settings.selected32BitEmulator".loc)
+                            }
+                        }
                     } header: {
                         Text("Developer Settings")
                     } footer: {
@@ -324,23 +448,6 @@ struct LCSettingsView: View {
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
                 Text(errorInfo)
-            }
-            .alert("lc.common.success".loc, isPresented: $successShow){
-            } message: {
-                Text(successInfo)
-            }
-            .alert("lc.settings.importCertificate".loc, isPresented: $certificateImportAlert.show) {
-                Button {
-                    certificateImportAlert.close(result: true)
-                } label: {
-                    Text("lc.common.ok".loc)
-                }
-                
-                Button("lc.common.cancel".loc, role: .cancel) {
-                    certificateImportAlert.close(result: false)
-                }
-            } message: {
-                Text("lc.settings.importCertificateDesc".loc)
             }
             .alert("lc.settings.removeCertificate".loc, isPresented: $certificateRemoveAlert.show) {
                 Button(role: .destructive) {
@@ -367,24 +474,6 @@ struct LCSettingsView: View {
             } message: {
                 Text("lc.settings.importCertFromBuiltinSideStoreDesc".loc)
             }
-            .betterFileImporter(isPresented: $certificateImportFileAlert.show, types: [.p12], multiple: false, callback: { fileUrls in
-                certificateImportFileAlert.close(result: fileUrls[0])
-            }, onDismiss: {
-                certificateImportFileAlert.close(result: nil)
-            })
-            .textFieldAlert(
-                isPresented: $certificateImportPasswordAlert.show,
-                title: "lc.settings.importCertificateInputPassword".loc,
-                text: $certificateImportPasswordAlert.initVal,
-                placeholder: "",
-                action: { newText in
-                    certificateImportPasswordAlert.close(result: newText)
-                },
-                actionCancel: {_ in
-                    certificateImportPasswordAlert.close(result: nil)
-                    certificateImportPasswordAlert.show = false
-                }
-            )
         }
         .onAppear {
             if !isViewAppeared {
@@ -400,12 +489,6 @@ struct LCSettingsView: View {
             sharedModel.deepLink = nil
             handleURL(url: link)
         }
-    }
-
-    private var isBetaiOS: Bool {
-        guard let buildVersion = UIDevice.current.buildVersion,
-              let lastChar = buildVersion.last else { return false }
-        return lastChar.isLowercase
     }
 
     /// An external-link row. The artwork is already a full-bleed tile, so it's sized
@@ -438,7 +521,7 @@ struct LCSettingsView: View {
 
     /// `iconSize` is per-symbol on purpose. Point size sets the em, not the drawn
     /// shape, and how much of that em a symbol inks varies by design — an enclosed
-    /// glyph like `j.circle` or a thin one like `app.grid` reads far smaller than a
+    /// glyph like `info.circle` or a thin one like `app.grid` reads far smaller than a
     /// `.fill` symbol at the same size. The default suits most of the set; the
     /// densest symbols pass a smaller value rather than everything sharing one size
     /// and half the rows looking undersized.
@@ -471,6 +554,33 @@ struct LCSettingsView: View {
                 )
             Text(title)
         }
+    }
+
+    /// The red mark iOS puts on a Settings row that needs the user, as it
+    /// badges General while an update waits.
+    private var attentionMark: some View {
+        Image(systemName: "exclamationmark.circle.fill")
+            .font(.system(size: 20))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, .red)
+            .accessibilityLabel(attentionReason)
+    }
+
+    /// What the mark is for: no certificate, or one that no longer works.
+    private var attentionReason: String {
+        sharedModel.needsCertificate
+            ? "lc.flek.certificate.notImported".loc
+            : "lc.flek.attention.certificateInvalid".loc
+    }
+
+    @ViewBuilder private var generalPage: some View {
+        FlekGeneralView(
+            managesCertificate: sharedModel.multiLCStatus != 2,
+            onRemoveCertificate: { clearCertificate() },
+            jitPage: { jitPage }
+        )
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .principal) { Text("lc.flek.cat.general".loc).font(.headline) } }
     }
 
     @ViewBuilder private var launchBehaviorPage: some View {
@@ -599,30 +709,9 @@ struct LCSettingsView: View {
     }
 
     @ViewBuilder private var jitPage: some View {
+        // JIT alone: the certificate that JIT-less takes, with its removal and
+        // its diagnosis, is on General.
         Form {
-                if sharedModel.multiLCStatus != 2 {
-                    Section {
-                        if !certificateDataFound {
-                            Button("lc.settings.importCertificate".loc) {
-                                Task { await importCertificate() }
-                            }
-                        } else {
-                            Button("lc.settings.removeCertificate".loc) {
-                                Task { await removeCertificate() }
-                            }
-                        }
-                        
-                        NavigationLink {
-                            LCJITLessDiagnoseView()
-                        } label: {
-                            Text("lc.settings.jitlessDiagnose".loc)
-                        }
-                    } header: {
-                        Text("lc.settings.jitLess".loc)
-                    } footer: {
-                        Text("lc.settings.jitLessDesc".loc)
-                    }
-                }
                 Section {
                     if JITEnabler == .SideJITServer || JITEnabler == .JITStreamerEBLegacy {
                         HStack {
@@ -641,21 +730,40 @@ struct LCSettingsView: View {
                         }
                     }
                     Picker(selection: $JITEnabler) {
+                        // StikJIT does not load before iOS 17.4.
+                        if #available(iOS 17.4, *) {
+                            Text(JITEnablerType.StikJITHeadless.displayName).tag(JITEnablerType.StikJITHeadless)
+                        }
                         Text("SideJITServer/JITStreamer 2.0").tag(JITEnablerType.SideJITServer)
                         Text("StikDebug").tag(JITEnablerType.StikJIT)
                         Text("StikDebug (Another FlekDeck)").tag(JITEnablerType.StikJITLC)
-                        Text("SideStore").tag(JITEnablerType.SideStore)
-                        Text("JitStreamer-EB (Relaunch)").tag(JITEnablerType.JITStreamerEBLegacy)
+                        // Not offered any more: SideStore, whose link does not
+                        // enable JIT on its own, and JitStreamer-EB, which is
+                        // no longer maintained. One chosen earlier stays
+                        // listed, as the menu needs a row for the selection.
+                        if JITEnabler.isNoLongerOffered {
+                            Text(JITEnabler.displayName).tag(JITEnabler)
+                        }
                     } label: {
                         Text("lc.settings.jitEnabler".loc)
                     }
+                    // StikDebug is set up outside FlekDeck, which can only
+                    // explain how.
+                    if JITEnabler == .StikJIT {
+                        NavigationLink {
+                            FlekStikDebugGuideView()
+                        } label: {
+                            Label("lc.flek.jit.stikdebug.help".loc, systemImage: "questionmark.circle")
+                        }
+                    }
                     
-                } header: {
-                    Text("JIT")
                 } footer: {
                     Text("lc.settings.JitDesc".loc)
                 }
-                
+                // The pairing file is the primary FlekDeck's, as it is upstream.
+                if JITEnabler == .StikJITHeadless, sharedModel.multiLCStatus == 0 {
+                    FlekBuiltInJITSection()
+                }
                 
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -745,6 +853,10 @@ struct LCSettingsView: View {
     func openGitHub() {
         UIApplication.shared.open(URL(string: "https://github.com/LiveContainer/LiveContainer")!)
     }
+
+    func openFlekDeckRepo() {
+        UIApplication.shared.open(URL(string: "https://github.com/FlekSign/FlekDeck")!)
+    }
     
     func openGitHub2() {
         UIApplication.shared.open(URL(string: "https://github.com/hugeBlack")!)
@@ -782,39 +894,6 @@ struct LCSettingsView: View {
         LCUtils.appGroupUserDefault.removeObject(forKey: "symbolOffsetCache")
     }
     
-    func importCertificate() async {
-        guard let doImport = await certificateImportAlert.open(), doImport else {
-            return
-        }
-        guard let certificateURL = await certificateImportFileAlert.open() else {
-            return
-        }
-        guard let certificatePassword = await certificateImportPasswordAlert.open() else {
-            return
-        }
-        let certificateData : Data
-        do {
-            certificateData = try Data(contentsOf: certificateURL)
-        } catch {
-            errorInfo = error.localizedDescription
-            errorShow = true
-            return
-        }
-        
-        guard let _ = LCUtils.getCertTeamId(withKeyData: certificateData, password: certificatePassword) else {
-            errorInfo = "lc.settings.invalidCertError".loc
-            errorShow = true
-            return
-        }
-        
-        LCUtils.appGroupUserDefault.set(certificateData, forKey: "LCCertificateData")
-        LCUtils.appGroupUserDefault.set(certificatePassword, forKey: "LCCertificatePassword")
-        LCUtils.appGroupUserDefault.set(NSDate.now, forKey: "LCCertificateUpdateDate")
-        certificateDataFound = true
-
-        UserDefaults.standard.set(LCSharedUtils.appGroupID(), forKey: "LCAppGroupID")
-    }
-
     func importCertificateFromSideStore() async {
         if UserDefaults.sideStoreExist() {
             if let ans = await certificateImportFromBuiltInSideStoreAlert.open(), ans {
@@ -889,18 +968,14 @@ struct LCSettingsView: View {
         LCUtils.appGroupUserDefault.set(certificateData, forKey: "LCCertificateData")
         LCUtils.appGroupUserDefault.set(password, forKey: "LCCertificatePassword")
         LCUtils.appGroupUserDefault.set(NSDate.now, forKey: "LCCertificateUpdateDate")
-        certificateDataFound = true
     }
     
-    func removeCertificate() async {
-        guard let doRemove = await certificateRemoveAlert.open(), doRemove else {
-            return
-        }
-        
+    /// Forgets the stored certificate. General asks first, in words of its own
+    /// that depend on the certificate.
+    func clearCertificate() {
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateData")
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificatePassword")
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateUpdateDate")
-        certificateDataFound = false
         
         UserDefaults.standard.set(nil, forKey: "LCAppGroupID")
     }

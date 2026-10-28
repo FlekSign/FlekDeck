@@ -53,10 +53,20 @@ enum FlekSymbol {
         return "xmark.circle"
     }
 
+    /// A signing certificate: a page under a seal. `checkmark.seal.text.page.fill`
+    /// is iOS 18+; before it, the page alone.
+    static var certificate: String {
+        if #available(iOS 18.0, *) { return "checkmark.seal.text.page.fill" }
+        return "doc.text.fill"
+    }
+
     /// Marks an app kept in the shared folder rather than privately. The same
     /// arrow the app list's banner badge uses, in its circled form so it reads
     /// as a mark beside a name rather than as a stray glyph.
     static let shared = "arrowshape.turn.up.left.circle.fill"
+
+    /// Marks an app set to launch with JIT, on its icon and where JIT is set up.
+    static let jit = "bolt.fill"
 }
 
 enum FlekTheme {

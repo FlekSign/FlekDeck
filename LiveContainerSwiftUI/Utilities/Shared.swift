@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 import SafariServices
 import Security
 import Combine
+import CryptoKit
 
 struct LCPath {
     public static let docPath = {
@@ -20,6 +21,7 @@ struct LCPath {
     public static let dataPath = docPath.appendingPathComponent("Data/Application")
     public static let appGroupPath = docPath.appendingPathComponent("Data/AppGroup")
     public static let tweakPath = docPath.appendingPathComponent("Tweaks")
+    public static let pairingFilePath = docPath.appendingPathComponent("SideStore/Documents/ALTPairingFile.mobiledevicepairing")
     
     public static let lcGroupDocPath = {
         let fm = FileManager()
@@ -104,6 +106,9 @@ struct LCPath {
         if !fm.fileExists(atPath: LCPath.lcGroupTweakPath.path) {
             try fm.createDirectory(at: LCPath.lcGroupTweakPath, withIntermediateDirectories: true)
         }
+        if !fm.fileExists(atPath: LCPath.pairingFilePath.path) {
+            try fm.createDirectory(at: LCPath.pairingFilePath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
     }
 }
 
@@ -124,6 +129,50 @@ class SharedModel: ObservableObject {
     // 2 = current liveContainer is not the primary one
     @Published var multiLCStatus = 0
     @Published var isJITModalOpen = false
+
+    /// Whether a signing certificate is stored, whichever way it came: taken
+    /// from the app bundle at launch, picked in Files, or handed back by
+    /// SideStore or a flekdeck://certificate link. It follows the stored
+    /// password itself rather than each of those reporting in, so a new way
+    /// of importing one cannot forget to.
+    @Published private(set) var isCertificateImported = LCSharedUtils.certificatePassword() != nil
+
+    /// Whether this copy of FlekDeck should be asking for a certificate. One
+    /// that is not the primary signs with the primary's and has no way to
+    /// import its own, so it has nothing to ask for.
+    var needsCertificate: Bool {
+        multiLCStatus != 2 && !isCertificateImported
+    }
+
+    /// Whether the stored certificate no longer signs: past its expiry, or
+    /// revoked as Apple last said. Marked until another is imported, as no
+    /// app can be signed till then. Not for a copy that signs with the
+    /// primary's, which has none of its own to replace.
+    @Published private(set) var isCertificateInvalid = false
+
+    /// Whether General's row carries the red mark: a certificate to import
+    /// or replace.
+    var generalNeedsAttention: Bool {
+        needsCertificate || isCertificateInvalid
+    }
+
+    /// What the Settings icon on the home screen counts: the certificate.
+    var settingsAttentionCount: Int {
+        generalNeedsAttention ? 1 : 0
+    }
+
+    private var certificateObservation: NSKeyValueObservation?
+    private var certificateDataObservation: NSKeyValueObservation?
+    private var foregroundObserver: NSObjectProtocol?
+
+    // Apple's last word on whether the stored certificate is revoked, kept
+    // by the certificate's digest so that it holds with no network, and
+    // when and for which certificate it was last asked.
+    private static let revokedCertificateKey = "FlekCertificateRevokedDigest"
+    private static let revocationAskedForKey = "FlekCertificateRevocationAskedFor"
+    private static let revocationAskedAtKey = "FlekCertificateRevocationAskedAt"
+    /// How often Apple is asked again about the same certificate.
+    private static let revocationRecheckInterval: TimeInterval = 60 * 60
     
     @Published var enableMultipleWindow = false
 
@@ -131,6 +180,7 @@ class SharedModel: ObservableObject {
     @Published var tweakFolderNames: [String] = []
     
     @Published var apps : [LCAppModel] = []
+    @Published var arm32EmuApps : [LCAppModel] = []
     @Published var hiddenApps : [LCAppModel] = []
     
     @Published var pidCallback : ((NSNumber, Error?) -> Void)? = nil
@@ -162,8 +212,132 @@ class SharedModel: ObservableObject {
         }
     }
     
+    /// Re-reads whether a certificate is stored, publishing only a change.
+    func refreshCertificateStatus() {
+        let imported = LCSharedUtils.certificatePassword() != nil
+        if imported != isCertificateImported {
+            isCertificateImported = imported
+        }
+        refreshCertificateValidity()
+    }
+
+    /// Re-reads whether the stored certificate still signs. Its expiry is in
+    /// the file. Whether it is revoked is Apple's to say, and Apple is asked
+    /// at most once an hour for the same certificate; until it answers, the
+    /// answer kept from before stands.
+    func refreshCertificateValidity() {
+        guard multiLCStatus != 2, isCertificateImported,
+              let data = LCUtils.certificateData(),
+              let password = LCSharedUtils.certificatePassword() else {
+            publishCertificateInvalid(false)
+            return
+        }
+        let digest = Self.digest(of: data)
+        let expiry = LCUtils.getCertInfo(withKeyData: data, password: password)?["notAfter"] as? Date
+        let isExpired = expiry.map { $0 < Date() } ?? false
+        let defaults = UserDefaults.standard
+        publishCertificateInvalid(isExpired || defaults.string(forKey: Self.revokedCertificateKey) == digest)
+
+        let askedRecently = defaults.string(forKey: Self.revocationAskedForKey) == digest
+            && Date().timeIntervalSince1970 - defaults.double(forKey: Self.revocationAskedAtKey) < Self.revocationRecheckInterval
+        guard !isExpired, !askedRecently else {
+            return
+        }
+        defaults.set(digest, forKey: Self.revocationAskedForKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.revocationAskedAtKey)
+        // As ZSign's check reports it: 0 good, 1 revoked, anything else no
+        // answer.
+        _ = LCUtils.validateCertificate { [weak self] status, _, _, _ in
+            DispatchQueue.main.async {
+                // An answer about a certificate replaced meanwhile is dropped.
+                guard let self, LCUtils.certificateData().map(Self.digest(of:)) == digest else {
+                    return
+                }
+                switch status {
+                case 0:
+                    if defaults.string(forKey: Self.revokedCertificateKey) == digest {
+                        defaults.removeObject(forKey: Self.revokedCertificateKey)
+                    }
+                    self.publishCertificateInvalid(false)
+                case 1:
+                    defaults.set(digest, forKey: Self.revokedCertificateKey)
+                    self.publishCertificateInvalid(true)
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func publishCertificateInvalid(_ invalid: Bool) {
+        if invalid != isCertificateInvalid {
+            isCertificateInvalid = invalid
+        }
+    }
+
+    private static func digest(of data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     init() {
         updateMultiLCStatus()
+        // Every import and removal writes the password through this defaults
+        // object, so watching it catches each one as it happens. Published on
+        // the next turn of the main queue: a write can come from inside a view
+        // update, where publishing is not allowed.
+        certificateObservation = LCUtils.appGroupUserDefault.observe(\.LCCertificatePassword) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshCertificateStatus() }
+        }
+        // A certificate replaced under the same password changes only this.
+        certificateDataObservation = LCUtils.appGroupUserDefault.observe(\.LCCertificateData) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshCertificateValidity() }
+        }
+        // Another FlekDeck sharing the app group can import or remove one
+        // while this one is in the background, and a certificate can run out
+        // meanwhile.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshCertificateStatus()
+        }
+        // After launch rather than during it: reading the certificate loads
+        // the signing library.
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshCertificateValidity()
+        }
+    }
+}
+
+extension UserDefaults {
+    /// The stored certificate password, declared only so that it can be
+    /// observed: key-value observing reaches a defaults key through a
+    /// property of exactly the key's name. The same goes for the one below.
+    @objc dynamic var LCCertificatePassword: String? {
+        string(forKey: "LCCertificatePassword")
+    }
+
+    @objc dynamic var LCCertificateData: Data? {
+        data(forKey: "LCCertificateData")
+    }
+
+}
+
+extension Bundle {
+    /// The per-device ID a signing service writes into the Info.plist of each
+    /// build it signs. A build none signed carries the key empty: nil.
+    var signingServiceDeviceID: String? {
+        let value = (infoDictionary?["encryptedUdid"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
+    }
+}
+
+extension String {
+    /// Whether this is shaped like an iOS device's UDID: eight hex digits, a
+    /// hyphen and sixteen more on devices since the iPhone XS, forty hex
+    /// digits on older ones. What is left in a half-cleared field is not.
+    var isDeviceUDID: Bool {
+        range(of: "^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}|[0-9A-Fa-f]{40})$", options: .regularExpression) != nil
     }
 }
 
@@ -256,6 +430,7 @@ extension UTType {
     static let deb = UTType(filenameExtension: "deb")!
     static let lcFramework = UTType(filenameExtension: "framework", conformingTo: .package)!
     static let p12 = UTType(filenameExtension: "p12")!
+    static let mobileProvision = UTType(filenameExtension: "mobileprovision")!
 }
 
 extension Color {

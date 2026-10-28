@@ -75,7 +75,7 @@ struct AppSceneViewSwiftUI: UIViewControllerRepresentable {
                 let defaultInsets = vc.view.window?.safeAreaInsets ?? .zero
                 settings.peripheryInsets = defaultInsets
                 settings.safeAreaInsetsPortrait = defaultInsets
-                settings.setInterfaceOrientation(UIApplication.shared.statusBarOrientation)
+                settings.setInterfaceOrientation(LCHostInterfaceOrientation(vc.view))
                 // Derived from the interface rather than the sensor, so the guest
                 // agrees with its window and Portrait Orientation Lock reaches it.
                 // Device and interface landscape names are mirror images.

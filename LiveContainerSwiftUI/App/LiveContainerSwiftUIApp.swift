@@ -24,15 +24,31 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
         if let hostEncryptedUdid = Bundle.main.infoDictionary?["encryptedUdid"] as? String,
            !hostEncryptedUdid.isEmpty {
             LCUtils.appGroupUserDefault.set(hostEncryptedUdid, forKey: "LCHostEncryptedUdid")
+        } else {
+            // A build no signing service injected it into has none to hand on, and
+            // must not hand on one an earlier install left behind. The app group
+            // outlives the app while anything else shares it, and a signing tool
+            // can give every app it signs with one certificate the same group.
+            LCUtils.appGroupUserDefault.removeObject(forKey: "LCHostEncryptedUdid")
         }
+        FlekBuiltInJIT.adoptWhereNothingIsChosen()
 
         LCPath.clearStaleShareInbox()
+
+        // Before the app list is read. A private app opened in a window is staged
+        // into the app group until the window closes, so a FlekDeck killed with
+        // windows open leaves copies behind, and builds before the staging folder
+        // left them among the shared apps, where they were listed as a second,
+        // shared copy of the app.
+        LCWindowStaging.recoverAfterLaunch()
+        MultitaskManager.beginFlushingGuestsWhenBackgrounded()
 
         let fm = FileManager()
         var tempAppDataFolderNames : [String] = []
         var tempTweakFolderNames : [String] = []
         
         var tempApps: [LCAppModel] = []
+        var tempArm32EmuApps: [LCAppModel] = []
         var tempHiddenApps: [LCAppModel] = []
         var tempURLSchemes: Set<String>? = DataManager.shared.model.multiLCStatus != 2 ? Set() : nil
 
@@ -53,11 +69,15 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
                 let newApp = LCAppInfo(bundlePath: "\(LCPath.bundlePath.path)/\(appDir)")!
                 newApp.relativeBundlePath = appDir
                 newApp.isShared = false
+                let model = LCAppModel(appInfo: newApp)
                 if newApp.isHidden {
-                    tempHiddenApps.append(LCAppModel(appInfo: newApp))
+                    tempHiddenApps.append(model)
                 } else {
-                    tempApps.append(LCAppModel(appInfo: newApp))
+                    tempApps.append(model)
                     tempURLSchemes?.formUnion(newApp.urlSchemes() as! [String])
+                }
+                if newApp.is32bitEmulator {
+                    tempArm32EmuApps.append(model)
                 }
             }
             if LCPath.lcGroupDocPath != LCPath.docPath {
@@ -74,11 +94,15 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
                     let newApp = LCAppInfo(bundlePath: "\(LCPath.lcGroupBundlePath.path)/\(appDir)")!
                     newApp.relativeBundlePath = appDir
                     newApp.isShared = true
+                    let model = LCAppModel(appInfo: newApp)
                     if newApp.isHidden {
-                        tempHiddenApps.append(LCAppModel(appInfo: newApp))
+                        tempHiddenApps.append(model)
                     } else {
-                        tempApps.append(LCAppModel(appInfo: newApp))
+                        tempApps.append(model)
                         tempURLSchemes?.formUnion(newApp.urlSchemes() as! [String])
+                    }
+                    if newApp.is32bitEmulator {
+                        tempArm32EmuApps.append(model)
                     }
                 }
             }
@@ -109,6 +133,7 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
         }
         
         DataManager.shared.model.apps = tempApps
+        DataManager.shared.model.arm32EmuApps = tempArm32EmuApps
         DataManager.shared.model.hiddenApps = tempHiddenApps
         DataManager.shared.model.appDataFolderNames = tempAppDataFolderNames
         DataManager.shared.model.tweakFolderNames = tempTweakFolderNames

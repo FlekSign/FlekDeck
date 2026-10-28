@@ -7,6 +7,7 @@
 import SwiftUI
 
 struct LCEntitlementView : View {
+    @State var isLiveProcess: Bool
     @State var loaded = false
     @State var entitlementReadSuccess = false
     
@@ -23,16 +24,17 @@ struct LCEntitlementView : View {
         if loaded {
             Form {
                 Section {
-                    HStack {
-                        Text("lc.jitlessDiag.bundleId".loc)
-                        Spacer()
-                        Text(Bundle.main.bundleIdentifier ?? "lc.common.unknown".loc)
-                            .foregroundStyle(entitlementReadSuccess && teamId != nil ? (isBundleIdCorrect ? .green : .red): .gray)
-                            .textSelection(.enabled)
+                    if !isLiveProcess {
+                        HStack {
+                            Text("lc.jitlessDiag.bundleId".loc)
+                            Spacer()
+                            Text(Bundle.main.bundleIdentifier ?? "lc.common.unknown".loc)
+                                .foregroundStyle(entitlementReadSuccess && teamId != nil ? (isBundleIdCorrect ? .green : .red): .gray)
+                                .textSelection(.enabled)
+                        }
                     }
-                    
                     if entitlementReadSuccess {
-                        if !isBundleIdCorrect && teamId != nil {
+                        if !isLiveProcess && !isBundleIdCorrect && teamId != nil {
                             HStack {
                                 Text("lc.jitlessDiag.bundleIdExpected".loc)
                                 Spacer()
@@ -80,7 +82,7 @@ struct LCEntitlementView : View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .principal) { Text("lc.jielessDiag.entitlement".loc).font(.headline) } }
+            .toolbar { ToolbarItem(placement: .principal) { Text(isLiveProcess ? "lc.jielessDiag.entitlement.liveProcess".loc : "lc.jielessDiag.entitlement".loc).font(.headline) } }
         } else {
             Text("lc.common.loading".loc)
                 .onAppear() {
@@ -98,7 +100,19 @@ struct LCEntitlementView : View {
             loaded = true
         }
         
-        guard let entitlementXML = getLCEntitlementXML() else {
+        let executablePath: String?
+        
+        if !isLiveProcess {
+            executablePath = Bundle.main.executablePath
+        } else {
+            executablePath = Bundle.main.builtInPlugInsURL?.appendingPathComponent("LiveProcess.appex/LiveProcess").path
+            if let executablePath, !FileManager.default.fileExists(atPath: executablePath) {
+                entitlementContent = "LiveProcess is not installed."
+                return
+            }
+        }
+
+        guard let entitlementXML = getExecutableEntitlementXML(executablePath) else {
             entitlementContent = "Failed to load entitlement."
             return
         }
@@ -148,6 +162,7 @@ struct LCEntitlementView : View {
 struct LCJITLessDiagnoseView : View {
     @State var loaded = false
     @State var appGroupId = "Unknown"
+    @State var appGroupIdColor : Color = .gray
     @State var store : Store = .SideStore
     @State var certificateDataFound = false
     @State var certificatePasswordFound = false
@@ -162,6 +177,12 @@ struct LCJITLessDiagnoseView : View {
     
     @State private var debugTapCount = 0
     @State private var showDebugSections = UserDefaults.standard.bool(forKey: "LCShowDebugSections")
+    /// The diagnostics a build a signing service installed keeps behind ten
+    /// taps on the title. Any other, whose certificate is the user's own,
+    /// shows them outright.
+    private var showsDiagnostics: Bool {
+        showDebugSections || Bundle.main.signingServiceDeviceID == nil
+    }
     
     @State var errorShow = false
     @State var errorInfo = ""
@@ -175,7 +196,7 @@ struct LCJITLessDiagnoseView : View {
     var body: some View {
         if loaded {
             Form {
-                if showDebugSections {
+                if showsDiagnostics {
                     Section {
                         HStack {
                             Text("lc.jitlessDiag.bundleId".loc)
@@ -189,7 +210,7 @@ struct LCJITLessDiagnoseView : View {
                             Text("lc.jitlessDiag.appGroupId".loc)
                             Spacer()
                             Text(appGroupId)
-                                .foregroundStyle(appGroupId == "Unknown" ? .red : .green)
+                                .foregroundStyle(appGroupIdColor)
                         }
                         HStack {
                             Text("lc.jitlessDiag.appGroupAccessible".loc)
@@ -216,9 +237,16 @@ struct LCJITLessDiagnoseView : View {
                             
                         }
                         NavigationLink {
-                            LCEntitlementView()
+                            LCEntitlementView(isLiveProcess: false)
                         } label: {
                             Text("lc.jielessDiag.entitlement".loc)
+                        }
+                        if sharedModel.multiLCStatus == 0 {
+                            NavigationLink {
+                                LCEntitlementView(isLiveProcess: true)
+                            } label: {
+                                Text("lc.jielessDiag.entitlement.liveProcess".loc)
+                            }
                         }
                     }
                 }
@@ -238,7 +266,7 @@ struct LCJITLessDiagnoseView : View {
                             .foregroundStyle(certificatePasswordFound ? .green : .red)
                     }
                     
-                    if showDebugSections {
+                    if showsDiagnostics {
                         HStack {
                             Text("lc.jitlessDiag.certLastUpdate".loc)
                             Spacer()
@@ -261,7 +289,7 @@ struct LCJITLessDiagnoseView : View {
                         }
                     }
                     if certificateDataFound {
-                        if showDebugSections {
+                        if showsDiagnostics {
                             HStack {
                                 Text("lc.jitlessDiag.certTeamId".loc)
                                 Spacer()
@@ -275,7 +303,7 @@ struct LCJITLessDiagnoseView : View {
                             Text(certificateStatus == -1 ? "lc.jitlessDiag.checking".loc : getStatusText(status: certificateStatus))
                                 .foregroundStyle(certificateStatus == 0 ? .green : .red)
                         }
-                        if showDebugSections {
+                        if showsDiagnostics {
                             HStack {
                                 Text("lc.jitlessDiag.certificateValidateUntil".loc)
                                 Spacer()
@@ -287,6 +315,10 @@ struct LCJITLessDiagnoseView : View {
                     
                 }
                                 
+                // What else FlekDeck's signing gives it: the memory apps in
+                // Single Mode can use.
+                FlekMemoryLimitSection()
+
                 Section {
                     Button {
                         testJITLessMode()
@@ -294,16 +326,7 @@ struct LCJITLessDiagnoseView : View {
                         Text("lc.settings.testJitLess".loc)
                     }
                     .disabled(isJITLessTestInProgress)
-                    
-                    if showDebugSections {
-                        Button {
-                            getHelp()
-                        } label: {
-                            Text("lc.jitlessDiag.getHelp".loc)
-                                .bold()
-                                .rainbow()
-                        }
-                    }
+                    // No "Get Help": it led to LiveContainer's FAQ, not FlekDeck's.
                 }
 
             }
@@ -351,7 +374,31 @@ struct LCJITLessDiagnoseView : View {
     }
     
     func onAppear() {
-        appGroupId = LCSharedUtils.appGroupID() ?? "lc.common.unknown".loc
+        
+        let task = SecTaskCreateFromSelf(nil)
+        guard let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.team-identifier" as CFString, nil), let teamId = value.takeRetainedValue() as? String else {
+            errorInfo = "Failed to read com.apple.developer.team-identifier"
+            errorShow = true
+            return
+        }
+        expectedTeamId = teamId
+        
+        if let fetchedAppGroupId = LCSharedUtils.appGroupID() {
+            appGroupId = fetchedAppGroupId
+            if UserDefaults.sideStoreExist() {
+                if fetchedAppGroupId == "group.com.SideStore.SideStore." + teamId {
+                    appGroupIdColor = .green
+                } else {
+                    appGroupIdColor = .orange
+                }
+            } else {
+                appGroupIdColor = .green
+            }
+        } else {
+            appGroupId = "lc.common.unknown".loc
+            appGroupIdColor = .red
+        }
+        
         store = LCUtils.store()
         appGroupAccessible = LCSharedUtils.appGroupPath() != nil
         certificateDataFound = LCUtils.certificateData() != nil
@@ -365,14 +412,7 @@ struct LCJITLessDiagnoseView : View {
         if certificateDataFound {
             validateCertificate()
         }
-        let task = SecTaskCreateFromSelf(nil)
-        guard let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.team-identifier" as CFString, nil), let teamId = value.takeRetainedValue() as? String else {
-            errorInfo = "Failed to read com.apple.developer.team-identifier"
-            errorShow = true
-            return
-        }
-        expectedTeamId = teamId
-        
+
         loaded = true
     }
     
@@ -395,10 +435,6 @@ struct LCJITLessDiagnoseView : View {
             isJITLessTestInProgress = false
         }
     
-    }
-    
-    func getHelp() {
-        UIApplication.shared.open(URL(string: "https://livecontainer.github.io/docs/faq/jit-less-mode-setup")!)
     }
     
     func validateCertificate() {

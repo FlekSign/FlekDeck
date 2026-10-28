@@ -21,6 +21,23 @@ UIEdgeInsets LCUIEdgeInsetsRotateToOrientation(UIEdgeInsets insets, UIInterfaceO
     }
 }
 
+/// `UIApplication.statusBarOrientation` is the old way to ask, and on iOS 27 it
+/// is a no-op for an app built against the iOS 27 SDK: it answers unknown, and
+/// UIKit logs that it has been deprecated. A guest's scene created from that
+/// answer faces no direction at all until a later update gives it one, and UIKit
+/// looks a scene's status bar height up by orientation.
+UIInterfaceOrientation LCHostInterfaceOrientation(UIView *view) {
+    UIWindowScene *scene = view.window.windowScene;
+    if(!scene) {
+        for(UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+            if(![candidate isKindOfClass:UIWindowScene.class]) continue;
+            scene = (UIWindowScene *)candidate;
+            if(candidate.activationState == UISceneActivationStateForegroundActive) break;
+        }
+    }
+    return scene.interfaceOrientation;
+}
+
 // Fix _UIPrototypingMenuSlider not continually updating its value on iOS 17+
 API_AVAILABLE(ios(17.0))
 @implementation _UIFluidSliderInteraction(Hook)

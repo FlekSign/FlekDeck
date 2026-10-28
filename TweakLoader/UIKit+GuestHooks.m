@@ -9,6 +9,8 @@ UIInterfaceOrientation LCOrientationLock = UIInterfaceOrientationUnknown;
 NSMutableArray<NSString*>* LCSupportedUrlSchemes = nil;
 BOOL launchURLProcessed = NO;
 
+static void LCInstallMultitaskGeometryFixes(void);
+
 __attribute__((constructor))
 static void UIKitGuestHooksInit() {
     if(!NSUserDefaults.lcGuestAppId) return;
@@ -19,6 +21,9 @@ static void UIKitGuestHooksInit() {
     swizzle(UIApplication.class, @selector(setDelegate:), @selector(hook_setDelegate:));
     swizzle(UIScene.class, @selector(scene:didReceiveActions:fromTransitionContext:), @selector(hook_scene:didReceiveActions:fromTransitionContext:));
     swizzle(UIScene.class, @selector(openURL:options:completionHandler:), @selector(hook_openURL:options:completionHandler:));
+    if(NSUserDefaults.isLiveProcess) {
+        LCInstallMultitaskGeometryFixes();
+    }
     NSInteger LCOrientationLockDirection = [NSUserDefaults.guestAppInfo[@"LCOrientationLock"] integerValue];
     if(LCOrientationLockDirection != 0 && [UIDevice.currentDevice userInterfaceIdiom] == UIUserInterfaceIdiomPhone) {
         switch (LCOrientationLockDirection) {
@@ -760,6 +765,95 @@ static LCControlAppURLHandling LCHandleControlAppURL(NSURL *url, NSString** modi
 }
 
 @end
+
+#pragma mark - Multitask geometry
+
+/// Whether the phone has a home indicator, asked of the hardware.
+///
+/// Face ID phones have rounded display corners and home-button phones do not. The
+/// display is asked rather than a safe area because in multitask the safe areas are
+/// the host's: under the switcher bar the bottom inset is zero on every phone.
+static BOOL LCDisplayHasHomeIndicator(void) {
+    static BOOL answer;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        UIScreen *screen = UIScreen.mainScreen;
+        answer = [screen respondsToSelector:@selector(_displayCornerRadius)] && screen._displayCornerRadius > 0;
+    });
+    return answer;
+}
+
+// TikTok (and the rest of its family) decides once per process whether the phone has a
+// home indicator, and lays out its root content and tab bar from that rather than from
+// safe areas. Both helpers below find out by measuring the bottom safe-area inset of a
+// view built for the purpose, the first time they are asked. In LiveProcess that reads
+// zero — the probe finds no foreground scene to join that early in launch, and the
+// scene it would join has its bottom inset zeroed for the switcher bar anyway — so the
+// app settles on "home button" for the session: its content is pushed down by the
+// notch's extra height under a black band, its tab bar loses the home-indicator padding
+// and runs off the bottom, and fake rounded corners are drawn over the window. Classic
+// mode never sees this: there the guest measures inside the host's full-screen scene.
+@implementation UIDevice(LiveContainerDisplayShape)
++ (BOOL)hook_awe_isIPhoneX {
+    return LCDisplayHasHomeIndicator();
+}
++ (BOOL)hook_tux_isIPhoneX {
+    return LCDisplayHasHomeIndicator();
+}
+@end
+
+/// Keeps a window built at the screen's size the size of the scene it is shown in.
+///
+/// `-initWithFrame:UIScreen.mainScreen.bounds` is the pre-scene way of building the
+/// app's window, and UIKit marks such a window to follow its scene. A maximized
+/// multitask scene is shorter than the screen by the switcher bar's strip, and a window
+/// that ends up at the screen's height anyway puts whatever the app pins to its bottom
+/// edge past the end of the scene, where the host clips it. Setting the size once puts
+/// the window back under UIKit's own rule, which keeps it in step from then on. A
+/// window of any other size is the app's own business and is left be.
+static void LCFitScreenSizedWindowToScene(UIWindow *window) {
+    UIWindowScene *scene = window.windowScene;
+    if(!scene || !CGAffineTransformIsIdentity(window.transform)) return;
+    CGSize screen = scene.screen.bounds.size;
+    CGSize size = window.bounds.size;
+    CGSize target = scene.coordinateSpace.bounds.size;
+    BOOL screenSized = fabs(size.width - screen.width) < 0.5 && fabs(size.height - screen.height) < 0.5;
+    BOOL sceneInsideScreen = target.width >= 1 && target.height >= 1 &&
+        target.width < screen.width + 0.5 && target.height < screen.height + 0.5;
+    BOOL sceneSmaller = target.width < screen.width - 0.5 || target.height < screen.height - 0.5;
+    if(!screenSized || !sceneInsideScreen || !sceneSmaller) return;
+    NSLog(@"[LC] screen-sized window %.0fx%.0f fitted to its scene %.0fx%.0f",
+          size.width, size.height, target.width, target.height);
+    window.frame = CGRectMake(0, 0, target.width, target.height);
+}
+
+static void LCInstallMultitaskGeometryFixes(void) {
+    // Only where the app has them. Nothing else defines these selectors, so their
+    // presence is a tighter test than a bundle ID, which forks of the app change.
+    for(NSString *name in @[@"awe_isIPhoneX", @"tux_isIPhoneX"]) {
+        SEL original = NSSelectorFromString(name);
+        if(class_getClassMethod(UIDevice.class, original)) {
+            swizzleClassMethod(UIDevice.class, original, NSSelectorFromString([@"hook_" stringByAppendingString:name]));
+        }
+    }
+
+    // Shown, or brought back to the foreground: both come after the window has a
+    // scene to be measured against, which is not always so when it is created.
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserverForName:UIWindowDidBecomeVisibleNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+        if([note.object isKindOfClass:UIWindow.class]) {
+            LCFitScreenSizedWindowToScene(note.object);
+        }
+    }];
+    [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+        for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if(![scene isKindOfClass:UIWindowScene.class]) continue;
+            for(UIWindow *window in ((UIWindowScene *)scene).windows) {
+                LCFitScreenSizedWindowToScene(window);
+            }
+        }
+    }];
+}
 
 @implementation UIWindow(hook)
 - (void)hook_setAutorotates:(BOOL)autorotates forceUpdateInterfaceOrientation:(BOOL)force {

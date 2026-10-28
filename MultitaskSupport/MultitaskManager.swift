@@ -45,4 +45,25 @@ enum MultitaskMode : Int {
         defer { lock.unlock() }
         return usingMultitaskContainers.count > 0
     }
+
+    static private var flushObservers: [NSObjectProtocol] = []
+
+    /// Tells the windows' guests to write out their preferences and cookies
+    /// whenever FlekDeck leaves the foreground. From there iOS may end FlekDeck
+    /// without warning — swiped away, or its memory reclaimed — and the windows'
+    /// processes die with it, taking whatever they had not yet written. Leaving
+    /// the foreground comes first every time, so it is the last sure moment.
+    /// Posted whether or not a window is known to be open: it costs nothing when
+    /// no guest is listening, and a guest missing from the list would lose out.
+    @objc class func beginFlushingGuestsWhenBackgrounded() {
+        guard flushObservers.isEmpty else { return }
+        let names = [UIApplication.willResignActiveNotification,
+                     UIApplication.didEnterBackgroundNotification,
+                     UIApplication.willTerminateNotification]
+        flushObservers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                LCSharedUtils.requestGuestFlush()
+            }
+        }
+    }
 }

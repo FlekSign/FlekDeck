@@ -63,6 +63,28 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // ipa choosing stuff
     @State var choosingIPA = false
     @State var errorShow = false
+    /// What to tell the user when an app set to launch with JIT was not started
+    /// because JIT is not set up; nil while there is nothing to tell.
+    @State private var jitNotReadyMessage: String?
+    /// Kept after the warning has gone, so that it does not blank on its way out.
+    @State private var jitNotReadyTitle = "lc.flek.jit.notReady.title".loc
+    /// A warning to put up once the one that is up has gone: an alert keeps
+    /// the text it came up with.
+    @State private var jitNotReadyNext: (title: String, message: String)?
+    /// A launch held back for what the device is connected through, to be
+    /// started once that has changed. The warning stays up meanwhile.
+    @State private var waitingLaunch: (() async -> Void)?
+    @State private var connectionWatch: FlekJITSetup.ConnectionWatch?
+    @State private var isRetryingLaunch = false
+    /// The FlekJIT shortcut has been run for the launch that waits, which it
+    /// is once: with Mobile Data still on after it, the user is asked.
+    @State private var hasRunShortcutForLaunch = false
+    /// While the shortcut runs, with the Shortcuts app in front.
+    @State private var isRunningShortcut = false
+    /// The shortcut has just run: how many times the next asking goes over
+    /// it with nothing said meanwhile, as what the shortcut switched takes a
+    /// moment to take. Zero where it has not.
+    @State private var quietTriesAfterShortcut = 0
     @State var errorInfo = ""
     /// The failed install the user tapped, driving the failed-install alert.
     @State private var failedInstallItem: InstallItem?
@@ -101,6 +123,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State private var isEditing = false
     @State private var showSettingsCover = false
     @State private var showInstallerCover = false
+    /// A URL or URL scheme the Installer handed on, to be opened once its
+    /// page has gone: nothing can be presented over it while it is up.
+    @State private var linkAfterInstaller: String?
     @State private var showSearch = false
     @State private var installerPreselectRepoURL: String?
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) var darkModeIcon = false
@@ -407,6 +432,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .fullScreenCover(isPresented: $showInstallerCover, onDismiss: {
             installerPreselectRepoURL = nil
+            if let link = linkAfterInstaller {
+                linkAfterInstaller = nil
+                Task { await openWebView(urlString: link) }
+            }
         }) {
             FlekMinimizingCover(
                 isPresented: $showInstallerCover,
@@ -527,6 +556,29 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             })
         } message: {
             Text(errorInfo)
+        }
+        .alert(jitNotReadyTitle, isPresented: Binding(
+            get: { jitNotReadyMessage != nil },
+            set: { if !$0 { jitNotReadyMessage = nil } }
+        )) {
+            if waitingLaunch == nil {
+                Button("lc.tabView.settings".loc) {
+                    handleHomeTap(.defaultApp(.settings))
+                }
+                Button("lc.common.ok".loc, role: .cancel) {}
+            } else {
+                // Up for as long as the launch waits, and taken down by it:
+                // the button is for not waiting.
+                Button("lc.common.cancel".loc, role: .cancel) {
+                    abandonWaitingLaunch()
+                }
+            }
+        } message: {
+            Text(jitNotReadyMessage ?? "")
+        }
+        // Back from Settings, where Airplane Mode has a switch as well.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            retryWaitingLaunch()
         }
         .alert("lc.flek.installFailedTitle".loc, isPresented: Binding(
             get: { failedInstallItem != nil },
@@ -689,6 +741,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
             }
             return true
+        }
+        // From the Installer's Open URL or URL Scheme. Its full-screen page
+        // goes first; in a window it is already out of the way.
+        .onReceive(NotificationCenter.default.publisher(for: .flekOpenURL)) { notification in
+            guard let link = notification.object as? String else { return }
+            if showInstallerCover {
+                linkAfterInstaller = link
+            } else {
+                Task { await openWebView(urlString: link) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
             if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
@@ -1210,9 +1272,150 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             } else {
                 try await app.runApp(multitask: false)
             }
+        } catch let notReady as FlekJITSetup.NotReady {
+            showJITNotReady(notReady) {
+                await launchHomeApp(app, parallel: parallel)
+            }
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
+        }
+    }
+
+    /// Says why an app set to launch with JIT was not started. Where all that
+    /// is missing is the connection, which the user is about to change, the
+    /// launch is kept and started once they have, with the warning up until
+    /// then: Control Center opens over it.
+    private func showJITNotReady(_ notReady: FlekJITSetup.NotReady, retry: @escaping () async -> Void) {
+        if let message = notReady.messageWhileWaiting {
+            waitingLaunch = retry
+            if connectionWatch == nil {
+                connectionWatch = FlekJITSetup.ConnectionWatch {
+                    retryWaitingLaunch()
+                }
+            }
+            // Over mobile data the FlekJIT shortcut switches Mobile Data off,
+            // where the user has added it, and the launch goes on from there.
+            // The user is asked only if that leads nowhere.
+            if notReady.isOverMobileData, FlekMobileDataShortcut.shared.isOn, !hasRunShortcutForLaunch {
+                hasRunShortcutForLaunch = true
+                isRunningShortcut = true
+                FlekMobileDataShortcut.shared.turnMobileDataOff { outcome in
+                    isRunningShortcut = false
+                    // One that did not run to its end has most likely switched
+                    // nothing, which a look or two shows.
+                    quietTriesAfterShortcut = outcome == .done ? 6 : 2
+                    retryWaitingLaunch()
+                }
+                return
+            }
+            presentJITNotReady(title: notReady.title, message: message)
+        } else {
+            abandonWaitingLaunch()
+            presentJITNotReady(title: notReady.title, message: notReady.message)
+        }
+    }
+
+    /// The warning that is up, or about to be.
+    private var jitNotReadyShown: String? {
+        jitNotReadyNext?.message ?? jitNotReadyMessage
+    }
+
+    private func presentJITNotReady(title: String, message: String) {
+        guard jitNotReadyShown != message else { return }
+        guard jitNotReadyMessage != nil || jitNotReadyNext != nil else {
+            jitNotReadyTitle = title
+            jitNotReadyMessage = message
+            return
+        }
+        // The one that is up goes first, and the latest asked for follows it.
+        let isAlreadyChanging = jitNotReadyNext != nil
+        jitNotReadyNext = (title, message)
+        jitNotReadyMessage = nil
+        guard !isAlreadyChanging else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard let next = jitNotReadyNext else { return }
+            jitNotReadyNext = nil
+            jitNotReadyTitle = next.title
+            jitNotReadyMessage = next.message
+        }
+    }
+
+    private func stopWaitingForConnection() {
+        waitingLaunch = nil
+        connectionWatch = nil
+        hasRunShortcutForLaunch = false
+    }
+
+    /// The launch that waited is not going to be started: Mobile Data that
+    /// the shortcut switched off for it goes back on.
+    private func abandonWaitingLaunch() {
+        stopWaitingForConnection()
+        FlekMobileDataShortcut.shared.turnMobileDataBackOn()
+    }
+
+    /// The connection has changed, or FlekDeck is back in front, with a
+    /// launch waiting: asks again whether JIT can be started, a few times
+    /// over, as what a change of connection opens takes a moment to open.
+    private func retryWaitingLaunch() {
+        guard waitingLaunch != nil, !isRetryingLaunch, !isRunningShortcut,
+              UIApplication.shared.applicationState == .active else {
+            return
+        }
+        isRetryingLaunch = true
+        let afterShortcut = quietTriesAfterShortcut > 0
+        let tries = afterShortcut ? quietTriesAfterShortcut : 4
+        quietTriesAfterShortcut = 0
+        Task {
+            defer { isRetryingLaunch = false }
+            for attempt in 0..<tries {
+                if attempt > 0 {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                }
+                guard let launch = waitingLaunch else { return }
+                do {
+                    try await FlekJITSetup.ensureReady()
+                    // Off mobile data, and the device not answering yet: what
+                    // the shortcut switched is still taking.
+                    if afterShortcut, attempt < tries - 1, !(await FlekBuiltInJIT.isDeviceReachable()) {
+                        continue
+                    }
+                } catch let notReady as FlekJITSetup.NotReady {
+                    guard let message = notReady.messageWhileWaiting else {
+                        // Something else is in the way now.
+                        showJITNotReady(notReady, retry: launch)
+                        return
+                    }
+                    if afterShortcut {
+                        guard attempt == tries - 1 else { continue }
+                        // After all that the shortcut has not got the device
+                        // off mobile data, and the user is asked, as without
+                        // it. Mobile Data it did switch off, for a launch that
+                        // now waits on something else, goes back on.
+                        if notReady.isOverMobileData {
+                            FlekMobileDataShortcut.shared.forget()
+                        } else {
+                            FlekMobileDataShortcut.shared.turnMobileDataBackOn()
+                        }
+                        presentJITNotReady(title: notReady.title, message: message)
+                        return
+                    }
+                    if message != jitNotReadyShown {
+                        // The next step of the same errand: Airplane Mode off
+                        // for the VPN to start, then on again.
+                        presentJITNotReady(title: notReady.title, message: message)
+                        return
+                    }
+                    continue
+                } catch {
+                    return
+                }
+                stopWaitingForConnection()
+                jitNotReadyNext = nil
+                jitNotReadyMessage = nil
+                await launch()
+                return
+            }
         }
     }
 
@@ -1827,6 +2030,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         guard let newAppInfo = LCAppInfo(bundlePath: appFolderPath.path) else {
             throw "lc.appList.infoPlistCannotReadError".loc
         }
+        item.resolvedName = newAppInfo.displayName()
 
         // A bundle ID chosen on the app's page. Goes through LCAppInfo rather
         // than the plist directly, so the original is recorded the way
@@ -2337,6 +2541,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             } catch {
                 errorInfo = error.localizedDescription
                 errorShow = true
+                return
             }
         }
         
@@ -2348,6 +2553,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
         do {
             try await appFound.runApp(multitask: nil, containerFolderName: container, urlStr: urlStr, forceJIT: forceJIT)
+        } catch let notReady as FlekJITSetup.NotReady {
+            showJITNotReady(notReady) {
+                await launchAppWithBundleId(bundleId: bundleId, container: container, urlStr: urlStr, forceJIT: forceJIT)
+            }
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
@@ -2397,10 +2606,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     
     func jitLaunch(withPID pid: Int, withScript script: String? = nil, appName: String) async {
         await MainActor.run {
-            let encodedData = script?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-                
-            
             if let jitEnabler = JITEnablerType(rawValue: LCUtils.appGroupUserDefault.integer(forKey: "LCJITEnablerType")) {
+                if jitEnabler == .StikJITHeadless {
+                    // let guest app spawn it
+                    return
+                }
+                
+                let encodedData = script?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
                 if jitEnabler == .StosDebug || jitEnabler == .StosDebugLC {
                     let encoded = encodedData.map { "&script=\($0)" } ?? ""
                     if jitEnabler == .StosDebugLC {
@@ -2438,7 +2650,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             return
                         }
                     } else {
-                        UIApplication.shared.open(url)
+                        // Nothing takes the link where StikDebug is not
+                        // installed, and the window would wait for JIT unanswered.
+                        UIApplication.shared.open(url) { opened in
+                            if !opened {
+                                errorInfo = "StikDebug could not be opened. Is it installed? Need Help in Settings › JIT shows how to set it up."
+                                errorShow = true
+                            }
+                        }
                     }
                 }
             }

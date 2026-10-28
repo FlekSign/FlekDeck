@@ -9,6 +9,7 @@
 #import "LiveContainerSwiftUI-Swift.h"
 #import "../LiveContainerSwiftUI/Utilities/LCUtils.h"
 #import "PiPManager.h"
+#import "LCGuestCaptureNotice.h"
 #import "Localization.h"
 #import "LCSharedUtils.h"
 #import "utils.h"
@@ -16,6 +17,8 @@
 #import <stdio.h>
 #import <sys/stdio.h>
 #import <sys/clonefile.h>
+#import <sys/stat.h>
+#import <sys/xattr.h>
 
 #pragma mark - App group staging
 
@@ -23,6 +26,20 @@
 // container, which LiveProcess cannot read, so both are staged into the app
 // group before the guest starts and the container is brought back when it
 // exits.
+//
+// Upstream LiveContainer hands LiveProcess security-scoped bookmarks to the
+// private files instead, and on iOS 26.4 those stopped opening for most private
+// apps (upstream issue #1265). The "Open Private Apps in Windows Without
+// Copying" developer switch goes back to bookmarks, to test whether they work
+// on a given build and iOS version.
+//
+// Staged files go under LiveContainer/Staging/<this FlekDeck's URL scheme>,
+// never beside the shared apps. A copy in LiveContainer/Applications is
+// indistinguishable from a shared app: one left behind by a FlekDeck killed with
+// a window open appeared on the home screen as a second, shared copy of the app,
+// which could be neither deleted nor converted. A folder per FlekDeck also keeps
+// two of them that run the same app from staging over each other's copy, and
+// keeps the shared apps' own Tweaks folder out of it.
 //
 // This used to be remove-then-copy run inline on the main thread. Both halves
 // scale with the number of files rather than their size, so an app with a large
@@ -34,6 +51,9 @@
 //
 // So nothing here removes or copies a tree on the path the user is waiting on:
 // trees are cloned into place, displaced by a rename, and deleted later.
+//
+// The helpers that clone, discard and settle the copies are in LCSharedUtils.m,
+// where a single-mode launch, which never loads this file, can reach them.
 
 // Serial: two windows opening at once would otherwise race on the same staged
 // bundle, and each stage is short enough that serialising them costs nothing.
@@ -58,64 +78,43 @@ static NSCountedSet *LCStagedBundleUsers(void) {
     return users;
 }
 
-static NSURL *LCStagingTrashURL(NSURL *appGroupLC) {
-    return [appGroupLC URLByAppendingPathComponent:@".StagingTrash"];
+// How long a closed window's copy of its container waits before it is put back.
+// cfprefsd holds a guest's last preference changes in memory for a few seconds
+// after the guest has gone, tied to this folder, and writes them out later.
+// Putting the folder back in that time, and cloning a fresh one into its place
+// for a reopened window, left that pending record pointing into our Documents,
+// where a window may not read, and cfprefsd refused the new guest every read and
+// write of its preferences ("accessing preferences outside an application's
+// container requires user-preference-read or file-read-data sandbox access").
+// WhatsApp reopened two seconds after closing came up logged out; five seconds
+// after, it did not.
+static const int64_t LCStagedContainerPutBackDelay = 10 * NSEC_PER_SEC;
+
+// The window each staged data container belongs to: the one running in it, or
+// the one that closed last, for as long as its copy waits to be put back. A
+// window opened meanwhile takes the copy over where it is, and the closed
+// window's put-back then leaves it alone. Only touched on LCStagingQueue.
+static NSMutableDictionary<NSString *, NSUUID *> *LCStagedContainerOwners(void) {
+    static NSMutableDictionary *owners;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ owners = [NSMutableDictionary new]; });
+    return owners;
 }
 
-// Deleting a large tree is one unlink per file. Renaming it into the trash is a
-// single operation, which is all the caller has to wait for; the deletion
-// itself happens later, off any path the user can see.
-static BOOL LCDiscardTree(NSURL *url, NSURL *appGroupLC) {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    if(![fm fileExistsAtPath:url.path]) {
-        return YES;
-    }
-    NSURL *trashDir = LCStagingTrashURL(appGroupLC);
-    [fm createDirectoryAtURL:trashDir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSURL *grave = [trashDir URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
-    if(rename(url.path.fileSystemRepresentation, grave.path.fileSystemRepresentation) == 0) {
-        return YES;
-    }
-    // Same-volume rename should not fail here, but never leave the caller with
-    // a path it believes is clear.
-    return [fm removeItemAtURL:url error:nil];
-}
-
-static void LCSweepStagingTrash(NSURL *appGroupLC) {
-    NSURL *trashDir = LCStagingTrashURL(appGroupLC);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        // Its own manager: NSFileManager.defaultManager is not safe to drive
-        // from an arbitrary queue while the rest of the app is using it.
-        NSFileManager *fm = [NSFileManager new];
-        NSArray<NSURL *> *graves = [fm contentsOfDirectoryAtURL:trashDir includingPropertiesForKeys:nil options:0 error:nil];
-        for(NSURL *grave in graves) {
-            [fm removeItemAtURL:grave error:nil];
+// Puts a staged container back LCStagedContainerPutBackDelay from now, unless a
+// window has taken it over by then. Call on LCStagingQueue, with owner just
+// recorded for it in LCStagedContainerOwners. LCReclaimStagedContainer
+// discards a copy nothing ran in.
+static void LCSchedulePutBack(NSString *dataUUID, NSUUID *owner, NSURL *stagedData, NSURL *localData, NSURL *appGroupLC) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, LCStagedContainerPutBackDelay), LCStagingQueue(), ^{
+        NSMutableDictionary<NSString *, NSUUID *> *owners = LCStagedContainerOwners();
+        if(![owners[dataUUID] isEqual:owner]) {
+            return;
         }
+        [owners removeObjectForKey:dataUUID];
+        LCReclaimStagedContainer(stagedData, localData, appGroupLC);
+        LCSweepStagingTrash(appGroupLC);
     });
-}
-
-// clonefile gives an APFS copy-on-write clone of an entire tree in one call: no
-// file data is duplicated and no per-file copy work is done, so it costs a
-// fraction of NSFileManager's copy and almost no disk.
-static BOOL LCCloneTree(NSURL *src, NSURL *dst) {
-    if(clonefile(src.path.fileSystemRepresentation, dst.path.fileSystemRepresentation, 0) == 0) {
-        return YES;
-    }
-    // Not APFS, or the two ended up on different volumes. Correctness first.
-    // Logged because the copy is orders of magnitude slower: if staging is ever
-    // sluggish again, this line is the difference between "the clone stopped
-    // working" and "something else is at fault".
-    NSLog(@"[LC] staging: clonefile unavailable for %@ (%s), falling back to a full copy",
-          src.lastPathComponent, strerror(errno));
-    // Clear anything a half-finished clone may have left, or the copy would only
-    // fail again on a destination that already exists.
-    NSError *error = nil;
-    [NSFileManager.defaultManager removeItemAtURL:dst error:nil];
-    if([NSFileManager.defaultManager copyItemAtURL:src toURL:dst error:&error]) {
-        return YES;
-    }
-    NSLog(@"[LC] staging: failed to stage %@: %@", src.lastPathComponent, error);
-    return NO;
 }
 
 // Replace whatever is at dst with a clone of src.
@@ -133,15 +132,17 @@ static BOOL LCStageTree(NSURL *src, NSURL *dst, NSURL *appGroupLC) {
 }
 
 // Blocking; call on LCStagingQueue. Returns whether the app was claimed and so
-// has to be released through LCUnstageAppFromAppGroup later.
-static BOOL LCStageAppToAppGroup(NSString *bundleId, NSString *dataUUID) {
+// has to be released through LCUnstageAppFromAppGroup later, with the same owner.
+static BOOL LCStageAppToAppGroup(NSString *bundleId, NSString *dataUUID, NSUUID *owner) {
     NSURL *appGroupPath = [LCSharedUtils appGroupPath];
     if(!appGroupPath) {
         return NO;
     }
     NSURL *appGroupLC = [appGroupPath URLByAppendingPathComponent:@"LiveContainer"];
+    NSURL *stagingRoot = LCStagingRootURL(appGroupLC);
     NSURL *docURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject;
     NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtURL:stagingRoot withIntermediateDirectories:YES attributes:nil error:nil];
 
     // Claim the bundle before touching it. Several windows can run the same app,
     // and they all execute from this one staged copy, so it may only be replaced
@@ -155,32 +156,57 @@ static BOOL LCStageAppToAppGroup(NSString *bundleId, NSString *dataUUID) {
     }
     if(!bundleAlreadyInUse) {
         NSURL *srcBundle = [docURL URLByAppendingPathComponent:[NSString stringWithFormat:@"Applications/%@", bundleId]];
-        NSURL *dstBundle = [appGroupLC URLByAppendingPathComponent:[NSString stringWithFormat:@"Applications/%@", bundleId]];
+        NSURL *dstBundle = [stagingRoot URLByAppendingPathComponent:[NSString stringWithFormat:@"Applications/%@", bundleId]];
         LCStageTree(srcBundle, dstBundle, appGroupLC);
     }
 
-    // The data container belongs to this window alone, so it is always staged
-    // fresh and handed back when the window closes.
+    // The data container belongs to this window alone, and is handed back once
+    // the window has closed. A copy still here from a window FlekDeck was killed
+    // under is settled first rather than cleared: it may be the only place that
+    // session's changes exist.
+    //
+    // A window closed a moment ago may not be gone yet either: its guest gets a
+    // few seconds between SIGTERM and SIGKILL to write out into this very copy,
+    // so wait for it to go. It has gone by the SIGKILL three seconds in.
     NSURL *srcData = [docURL URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
-    NSURL *dstData = [appGroupLC URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
-    LCStageTree(srcData, dstData, appGroupLC);
+    NSURL *dstData = [stagingRoot URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
+    for(int i = 0; i < 40 && LCContainerIsInUse(dataUUID); i++) {
+        usleep(100 * 1000);
+    }
+    NSMutableDictionary<NSString *, NSUUID *> *owners = LCStagedContainerOwners();
+    if(owners[dataUUID] && [fm fileExistsAtPath:dstData.path]) {
+        // Closed moments ago and still waiting to be put back: this window runs
+        // on that copy where it is. It holds the session that just ended, and
+        // moving it now is what LCStagedContainerPutBackDelay is there to avoid.
+        NSLog(@"[LC] staging: reopening container %@ on the copy its last window left", dataUUID);
+    } else {
+        LCReclaimStagedContainer(dstData, srcData, appGroupLC);
+        if(LCStageTree(srcData, dstData, appGroupLC)) {
+            LCWriteStagingMark(dstData, srcData);
+        }
+    }
+    owners[dataUUID] = owner;
 
     // Tweaks, refreshed every launch like the bundle and the container above.
     // Staging once froze this folder at whatever existed the first time the
     // device ever ran anything in parallel, so a tweak installed or updated
     // afterwards was present in single mode — which reads the live
-    // Documents/Tweaks — and silently missing here. A premium check living in a
-    // tweak then worked in one mode and not the other.
+    // Documents/Tweaks — and silently missing here. A check living in a tweak
+    // then worked in one mode and not the other.
     //
     // Swapped in rather than overwritten in place: multitask runs several guests
     // at once, and clearing the folder before refilling it leaves a window in
     // which a guest starting concurrently finds no tweaks at all. renameatx_np
     // with RENAME_SWAP exchanges the two directories in one step, so a guest
     // sees either the old set or the new one.
+    //
+    // Staged beside the bundle, not into the app group's own Tweaks folder. That
+    // one holds the shared apps' tweaks, and swapping a copy of ours in over it
+    // deleted them every time a private app opened in a window.
     NSURL *srcTweaks = [docURL URLByAppendingPathComponent:@"Tweaks"];
-    NSURL *dstTweaks = [appGroupLC URLByAppendingPathComponent:@"Tweaks"];
+    NSURL *dstTweaks = [stagingRoot URLByAppendingPathComponent:@"Tweaks"];
     if ([fm fileExistsAtPath:srcTweaks.path]) {
-        NSURL *stagedTweaks = [appGroupLC URLByAppendingPathComponent:@"Tweaks.staging"];
+        NSURL *stagedTweaks = [stagingRoot URLByAppendingPathComponent:@"Tweaks.staging"];
         LCDiscardTree(stagedTweaks, appGroupLC);
         if (LCCloneTree(srcTweaks, stagedTweaks)) {
             if (renameatx_np(AT_FDCWD, stagedTweaks.path.fileSystemRepresentation,
@@ -203,9 +229,11 @@ static BOOL LCStageAppToAppGroup(NSString *bundleId, NSString *dataUUID) {
     return YES;
 }
 
-// Blocking; call on LCStagingQueue. reclaimData brings the guest's container
-// back over the local one — pass NO when the guest never started.
-static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOOL reclaimData) {
+// Call on LCStagingQueue. Brings the guest's container back over the local one,
+// LCStagedContainerPutBackDelay later, if anything ran in the copy — so also
+// when this window's guest never started but it reopened a copy an earlier
+// window had left. owner is the one LCStageAppToAppGroup was given.
+static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, NSUUID *owner) {
     // Released first, and unconditionally: bailing out below with the claim still
     // held would pin the bundle for the rest of the session, so it would never be
     // re-staged and never cleaned up.
@@ -221,59 +249,176 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
         return;
     }
     NSURL *appGroupLC = [appGroupPath URLByAppendingPathComponent:@"LiveContainer"];
+    NSURL *stagingRoot = LCStagingRootURL(appGroupLC);
     NSURL *docURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject;
-    NSFileManager *fm = NSFileManager.defaultManager;
 
-    NSURL *stagedData = [appGroupLC URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
+    NSURL *stagedData = [stagingRoot URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
     NSURL *localData = [docURL URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
-    if(!reclaimData) {
-        LCDiscardTree(stagedData, appGroupLC);
-    } else if([fm fileExistsAtPath:stagedData.path]) {
-        // Swapped back rather than deleted-and-copied. Besides trading a walk of
-        // every file for a single rename, this removes the window in which the
-        // local container had been deleted and its replacement not yet written:
-        // being killed in there used to lose the guest's data outright.
-        //
-        // Nothing below clears the local container until its replacement is
-        // somewhere safe, so a failure at any step costs the session's changes
-        // at worst, never the container.
-        BOOL localExists = [fm fileExistsAtPath:localData.path];
-        if(localExists &&
-           renameatx_np(AT_FDCWD, stagedData.path.fileSystemRepresentation,
-                        AT_FDCWD, localData.path.fileSystemRepresentation,
-                        RENAME_SWAP) == 0) {
-            // The swap left the pre-launch copy where the staged one was.
-            LCDiscardTree(stagedData, appGroupLC);
-        } else if(!localExists &&
-                  rename(stagedData.path.fileSystemRepresentation, localData.path.fileSystemRepresentation) == 0) {
-            // First run of this container, so there was nothing to swap with.
-        } else {
-            // Swapping is unsupported here. Land a copy beside the container
-            // first and only then put it in place.
-            NSURL *incoming = [localData URLByAppendingPathExtension:@"incoming"];
-            LCDiscardTree(incoming, appGroupLC);
-            if(LCCloneTree(stagedData, incoming)) {
-                LCDiscardTree(localData, appGroupLC);
-                if(rename(incoming.path.fileSystemRepresentation, localData.path.fileSystemRepresentation) == 0) {
-                    LCDiscardTree(stagedData, appGroupLC);
-                } else {
-                    NSLog(@"[LC] staging: failed to reclaim container %@: %s", dataUUID, strerror(errno));
-                }
-            } else {
-                NSLog(@"[LC] staging: could not copy container %@ back, leaving it staged", dataUUID);
-            }
-        }
+    // Only the window the container was last staged for settles it. Staged again
+    // or taken over by a newer window, it is that window's to bring back.
+    NSMutableDictionary<NSString *, NSUUID *> *owners = LCStagedContainerOwners();
+    if(![owners[dataUUID] isEqual:owner]) {
+        NSLog(@"[LC] staging: container %@ belongs to a newer window, leaving it to that one", dataUUID);
+    } else {
+        // Once cfprefsd is done with the folder. FlekDeck killed before then
+        // leaves it to be settled after the home screen next opens, or before
+        // the app next starts in single mode.
+        LCSchedulePutBack(dataUUID, owner, stagedData, localData, appGroupLC);
     }
 
     // The bundle is shared between every window running this app, so it only
     // goes once the last of them has exited.
     if(wasLastUser) {
-        NSURL *stagedBundle = [appGroupLC URLByAppendingPathComponent:[NSString stringWithFormat:@"Applications/%@", bundleId]];
+        NSURL *stagedBundle = [stagingRoot URLByAppendingPathComponent:[NSString stringWithFormat:@"Applications/%@", bundleId]];
         LCDiscardTree(stagedBundle, appGroupLC);
     }
 
     LCSweepStagingTrash(appGroupLC);
 }
+
+// The data container folder names an app's settings file lists. Container
+// folders are named by UUID, so two settings files that share one describe the
+// same app.
+static NSSet<NSString *> *LCContainerFolderNames(NSDictionary *appInfo) {
+    NSMutableSet<NSString *> *names = [NSMutableSet set];
+    NSString *dataUUID = appInfo[@"LCDataUUID"];
+    if([dataUUID isKindOfClass:NSString.class] && dataUUID.length > 0) {
+        [names addObject:dataUUID];
+    }
+    NSArray *containers = appInfo[@"LCContainers"];
+    if([containers isKindOfClass:NSArray.class]) {
+        for(NSDictionary *container in containers) {
+            if(![container isKindOfClass:NSDictionary.class]) {
+                continue;
+            }
+            NSString *folderName = container[@"folderName"];
+            if([folderName isKindOfClass:NSString.class] && folderName.length > 0) {
+                [names addObject:folderName];
+            }
+        }
+    }
+    return names;
+}
+
+// Whether a bundle among the shared apps is a copy an older build staged for a
+// window of the private app with the same folder name, rather than a shared app
+// in its own right. The copy carries the app's settings file over as it was, so
+// it has the same installation date or, if the app has been updated since, at
+// least one data container in common. A separately installed app has neither.
+static BOOL LCIsStagedCopyOf(NSDictionary *copyInfo, NSDictionary *appInfo) {
+    if(![copyInfo isKindOfClass:NSDictionary.class] || ![appInfo isKindOfClass:NSDictionary.class]) {
+        return NO;
+    }
+    NSDate *copyInstalled = copyInfo[@"installationDate"];
+    NSDate *appInstalled = appInfo[@"installationDate"];
+    if([copyInstalled isKindOfClass:NSDate.class] && [appInstalled isKindOfClass:NSDate.class] &&
+       [copyInstalled isEqualToDate:appInstalled]) {
+        return YES;
+    }
+    return [LCContainerFolderNames(copyInfo) intersectsSet:LCContainerFolderNames(appInfo)];
+}
+
+// Brings back what this FlekDeck's windows had staged when it was killed. The
+// data containers are settled the way a closing window settles them, and the
+// bundle and tweak copies, being only copies, go. Anything a guest that outlived
+// its FlekDeck still holds is left for a later launch.
+static void LCRecoverStagingRoot(NSURL *appGroupLC, NSURL *docURL) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *stagingRoot = LCStagingRootURL(appGroupLC);
+    if(![fm fileExistsAtPath:stagingRoot.path]) {
+        return;
+    }
+    NSURL *stagedDataDir = [stagingRoot URLByAppendingPathComponent:@"Data/Application"];
+    NSURL *localDataDir = [docURL URLByAppendingPathComponent:@"Data/Application"];
+    BOOL anyInUse = NO;
+    for(NSString *folderName in [fm contentsOfDirectoryAtPath:stagedDataDir.path error:nil]) {
+        if(LCContainerIsInUse(folderName)) {
+            anyInUse = YES;
+            continue;
+        }
+        // Not at once, but as a closed window's copy is: FlekDeck closed right
+        // after the window leaves cfprefsd holding that window's last preference
+        // changes for this folder (see LCStagedContainerPutBackDelay), and the app
+        // opened in a window just after the relaunch came up logged out. A window
+        // opened meanwhile takes the copy over where it is.
+        NSLog(@"[LC] staging: container %@ was left staged by a window FlekDeck went away under, putting it back shortly", folderName);
+        NSUUID *owner = [NSUUID UUID];
+        LCStagedContainerOwners()[folderName] = owner;
+        LCSchedulePutBack(folderName, owner, [stagedDataDir URLByAppendingPathComponent:folderName],
+                          [localDataDir URLByAppendingPathComponent:folderName], appGroupLC);
+    }
+    if(anyInUse) {
+        return;
+    }
+    LCDiscardTree([stagingRoot URLByAppendingPathComponent:@"Applications"], appGroupLC);
+    LCDiscardTree([stagingRoot URLByAppendingPathComponent:@"Tweaks"], appGroupLC);
+    LCDiscardTree([stagingRoot URLByAppendingPathComponent:@"Tweaks.staging"], appGroupLC);
+}
+
+// Clears what builds before the staging folder left among the shared apps. They
+// staged into LiveContainer/Applications and LiveContainer/Data/Application
+// directly, so the copy of a window that never closed was listed as a shared app
+// with the same folder name as the private one. On the home screen it took the
+// private app's place and could be neither deleted nor converted.
+static void LCRecoverLegacyStagedCopies(NSURL *appGroupLC, NSURL *docURL) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *sharedApps = [appGroupLC URLByAppendingPathComponent:@"Applications"];
+    NSURL *privateApps = [docURL URLByAppendingPathComponent:@"Applications"];
+    NSURL *sharedDataDir = [appGroupLC URLByAppendingPathComponent:@"Data/Application"];
+    NSURL *localDataDir = [docURL URLByAppendingPathComponent:@"Data/Application"];
+    for(NSString *folderName in [fm contentsOfDirectoryAtPath:sharedApps.path error:nil]) {
+        if(![folderName hasSuffix:@".app"]) {
+            continue;
+        }
+        NSURL *copy = [sharedApps URLByAppendingPathComponent:folderName];
+        NSURL *app = [privateApps URLByAppendingPathComponent:folderName];
+        NSDictionary *copyInfo = [NSDictionary dictionaryWithContentsOfURL:[copy URLByAppendingPathComponent:@"LCAppInfo.plist"]];
+        NSDictionary *appInfo = [NSDictionary dictionaryWithContentsOfURL:[app URLByAppendingPathComponent:@"LCAppInfo.plist"]];
+        if(!LCIsStagedCopyOf(copyInfo, appInfo)) {
+            continue;
+        }
+        NSSet<NSString *> *containers = LCContainerFolderNames(copyInfo);
+        BOOL inUse = NO;
+        for(NSString *container in containers) {
+            if(LCContainerIsInUse(container)) {
+                inUse = YES;
+                break;
+            }
+        }
+        if(inUse) {
+            continue;
+        }
+        NSLog(@"[LC] staging: removing a window copy of %@ left among the shared apps", folderName);
+        for(NSString *container in containers) {
+            LCReclaimStagedContainer([sharedDataDir URLByAppendingPathComponent:container],
+                                     [localDataDir URLByAppendingPathComponent:container], appGroupLC);
+        }
+        LCDiscardTree(copy, appGroupLC);
+    }
+    // Only ever there part-way through refreshing the tweaks, which older builds
+    // did in the shared folder itself.
+    LCDiscardTree([appGroupLC URLByAppendingPathComponent:@"Tweaks.staging"], appGroupLC);
+}
+
+@implementation LCWindowStaging
+
++ (void)recoverAfterLaunch {
+    NSURL *appGroupPath = [LCSharedUtils appGroupPath];
+    if(!appGroupPath) {
+        return;
+    }
+    NSURL *appGroupLC = [appGroupPath URLByAppendingPathComponent:@"LiveContainer"];
+    NSURL *docURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject;
+    // On the staging queue like every other move of these folders. Nothing else
+    // is queued this early, so this waits for nothing but itself.
+    dispatch_sync(LCStagingQueue(), ^{
+        LCRecoverStagingRoot(appGroupLC, docURL);
+        LCRecoverLegacyStagedCopies(appGroupLC, docURL);
+    });
+    LCSweepStagingTrash(appGroupLC);
+}
+
+@end
 
 @interface AppSceneViewController()
 @property int resizeDebounceToken;
@@ -282,6 +427,8 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
 @property bool isNativeWindow;
 @property NSUUID* identifier;
 @property bool stagedToAppGroup;
+// Identifies this window's staging of its container; see LCStagedContainerOwners.
+@property NSUUID *stagingOwner;
 @end
 
 @interface AppSceneViewController()
@@ -289,6 +436,12 @@ static void LCUnstageAppFromAppGroup(NSString *bundleId, NSString *dataUUID, BOO
 @property(nonatomic) NSString *sceneID;
 @property(nonatomic) NSExtension* extension;
 @property(nonatomic, readwrite) bool isAppTerminationCleanUpCalled;
+/// Registrations on the guest's PiP requests, for as long as the guest is running.
+@property(nonatomic) NSNumber *pipStartToken;
+@property(nonatomic) NSNumber *pipStopToken;
+@property(nonatomic) NSNumber *pipReadyToken;
+/// Raises the Single Mode sheet when the guest is refused the microphone.
+@property(nonatomic) LCGuestCaptureNotice *captureNotice;
 @end
 
 /// The device orientation to hand a guest, derived from the orientation UIKit has
@@ -356,7 +509,7 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     
     // init extension
     NSError* error = nil;
-    _extension = [NSExtension extensionWithIdentifier:LCUtils.liveProcessBundleIdentifier error:&error];
+    _extension = [NSExtension extensionWithIdentifier:LCSharedUtils.liveProcessBundleIdentifier error:&error];
     if(error) {
         [delegate appSceneVC:self didInitializeWithError:error];
         return nil;
@@ -380,13 +533,62 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     }
     
     NSURL *docURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject;
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"LCSharePrivateDataWithLiveProcess"]) {
+    BOOL sharePrivateData = [NSUserDefaults.standardUserDefaults boolForKey:@"LCSharePrivateDataWithLiveProcess"];
+    if (sharePrivateData) {
         NSData* bookmarkData = [docURL bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0];
         if(bookmarkData) {
             [bookmarks addObject:bookmarkData];
         }
     }
+
+    // A private app is staged into this FlekDeck's folder in the app group (see
+    // "App group staging" above), unless the developer switch asks for it to be
+    // handed over through bookmarks as upstream does. The guest is told which,
+    // so that it never looks for a private app among the shared ones.
+    bool isSharedApp = false;
+    NSBundle *bundle = [LCSharedUtils findBundleWithBundleId:bundleId isSharedAppOut:&isSharedApp];
     
+    // With built-in JIT a guest enables JIT for itself, through a helper that
+    // reads the pairing file and reaches this device over a VPN. Neither can
+    // read this app's container, so the folder the pairing file is in is handed
+    // over before the guest starts. And where the VPN is FlekDeck's own, it is
+    // turned on for a guest that needs JIT; the helper keeps trying while it
+    // comes up, so nothing here waits for it.
+    if([NSUserDefaults.lcSharedDefaults integerForKey:@"LCJITEnablerType"] == 7) { // JITEnablerType.StikJITHeadless
+        [LCUtils issueBuiltInJITSandboxExtension];
+        NSDictionary *guestInfo = [NSDictionary dictionaryWithContentsOfFile:[bundle.bundlePath stringByAppendingPathComponent:@"LCAppInfo.plist"]];
+        if([guestInfo[@"isJITNeeded"] boolValue]) {
+            [LCSharedUtils startBuiltInVPNWithCompletionHandler:nil];
+        }
+    }
+    
+    BOOL withoutCopying = !isSharedApp && ![bundleId isEqualToString:@"builtinSideStore"] &&
+        [NSUserDefaults.standardUserDefaults boolForKey:@"LCOpenPrivateAppsWithoutCopying"];
+    if (withoutCopying) {
+        if (!sharePrivateData) {
+            // The bundle, this window's container and the tweaks, as upstream
+            // hands them over. Upstream adds these unchecked; a missing one here
+            // is left for the guest to report, rather than crashing the window.
+            NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+            if (bundle.bundleURL) {
+                [urls addObject:bundle.bundleURL];
+            }
+            [urls addObject:[docURL URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]]];
+            [urls addObject:[docURL URLByAppendingPathComponent:@"Tweaks"]];
+            for (NSURL *url in urls) {
+                NSData *bookmarkData = [url bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0];
+                if (bookmarkData) {
+                    [bookmarks addObject:bookmarkData];
+                } else {
+                    NSLog(@"[LC] could not make a bookmark for %@", url.path);
+                }
+            }
+        }
+        userInfo[@"privateAppViaAccessPasses"] = @YES;
+    } else if (!isSharedApp) {
+        userInfo[@"stagingPath"] = LCStagingRelativePath();
+    }
+
     item.userInfo = userInfo;
 
     __weak typeof(self) weakSelf = self;
@@ -400,20 +602,19 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 
     _isNativeWindow = [NSUserDefaults.lcSharedDefaults integerForKey:@"LCMultitaskMode" ] == 1;
 
-    // Local app files are staged into the app group so the extension can reach
-    // them (security-scoped bookmarks are unreliable on iOS 26+). That walks the
-    // whole bundle and data container, so it runs on the staging queue and the
-    // guest starts once it is finished — the window can be built and animated in
-    // while it happens, instead of the main thread sitting on it.
-    bool isSharedApp = false;
-    [LCSharedUtils findBundleWithBundleId:bundleId isSharedAppOut:&isSharedApp];
-    if (isSharedApp) {
+    // Staging walks the whole bundle and data container, so it runs on the
+    // staging queue and the guest starts once it is finished — the window can be
+    // built and animated in while it happens, instead of the main thread sitting
+    // on it.
+    if (isSharedApp || withoutCopying) {
         [self beginExtensionRequestWithItem:item delegate:delegate];
     } else {
         NSString *stagingBundleId = bundleId;
         NSString *stagingDataUUID = dataUUID;
+        NSUUID *stagingOwner = [NSUUID UUID];
+        self.stagingOwner = stagingOwner;
         dispatch_async(LCStagingQueue(), ^{
-            BOOL staged = LCStageAppToAppGroup(stagingBundleId, stagingDataUUID);
+            BOOL staged = LCStageAppToAppGroup(stagingBundleId, stagingDataUUID, stagingOwner);
             dispatch_async(dispatch_get_main_queue(), ^{
                 AppSceneViewController *strongSelf = weakSelf;
                 if(!strongSelf || strongSelf.isAppTerminationCleanUpCalled) {
@@ -421,7 +622,7 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
                     // bundle back rather than pinning it for the whole session.
                     if(staged) {
                         dispatch_async(LCStagingQueue(), ^{
-                            LCUnstageAppFromAppGroup(stagingBundleId, stagingDataUUID, NO);
+                            LCUnstageAppFromAppGroup(stagingBundleId, stagingDataUUID, stagingOwner);
                         });
                     }
                     return;
@@ -470,7 +671,8 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
         settings.foreground = YES;
         // Baseline geometry for a windowed scene. A maximized one is re-derived
         // by the delegate at the bottom of this block, which has the last word.
-        settings.interfaceOrientation = UIApplication.sharedApplication.statusBarOrientation;
+        // Asked of the window scene: see LCHostInterfaceOrientation.
+        settings.interfaceOrientation = LCHostInterfaceOrientation(self.view);
         UIDeviceOrientation guestDevice = LCDeviceOrientationForInterface(settings.interfaceOrientation);
         // Only ever written with a real answer; unknown leaves the guest as it is.
         if(guestDevice != UIDeviceOrientationUnknown) settings.deviceOrientation = guestDevice;
@@ -607,6 +809,9 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     self.contentView.layer.position = CGPointMake(0, 0);
     
     [self.view.window.windowScene _registerSettingsDiffActionArray:@[self] forKey:self.sceneID];
+
+    [self beginObservingGuestPiPRequests];
+    [self beginObservingGuestCaptureRefusals];
 
     if([self.delegate respondsToSelector:@selector(appSceneVCDidPresentScene:)]) {
         [self.delegate appSceneVCDidPresentScene:self];
@@ -758,6 +963,9 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     _isAppTerminationCleanUpCalled = true;
 
     [_audio invalidate];
+    [self endObservingGuestPiPRequests];
+    [_captureNotice invalidate];
+    _captureNotice = nil;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         // Bring the guest's container back and release the staged bundle. This
@@ -774,8 +982,9 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
             self.stagedToAppGroup = false;
             NSString *bundleId = self.bundleId;
             NSString *dataUUID = self.dataUUID;
+            NSUUID *stagingOwner = self.stagingOwner;
             dispatch_async(LCStagingQueue(), ^{
-                LCUnstageAppFromAppGroup(bundleId, dataUUID, YES);
+                LCUnstageAppFromAppGroup(bundleId, dataUUID, stagingOwner);
             });
         }
 
@@ -797,6 +1006,195 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
         [self.delegate appSceneVCAppDidExit:self];
         [MultitaskManager unregisterMultitaskContainerWithContainer:self.dataUUID];
     });
+}
+
+#pragma mark - Guest PiP requests
+
+/// Listens for the guest asking to be put into Picture in Picture.
+///
+/// A guest cannot hold a PiP window of its own: the window's content is a scene
+/// SpringBoard creates with the requesting process as its scene client, and
+/// FrontBoard refuses to make an app extension one, so the guest's own attempt
+/// produces a window that is permanently black. LiveContainer, being an ordinary
+/// installed app, has no such trouble. So LCGuestPiP swallows the request inside
+/// the guest and posts it here instead, and the window floats the way any other
+/// window does when PiP is chosen from its card.
+///
+/// Registered once the guest is running, which is the earliest anything can ask.
+- (void)beginObservingGuestPiPRequests {
+    if(self.pipStartToken || self.pipStopToken) return;
+    // The same fixed literal keyed by container that LCAudioMute's channel uses,
+    // and for the same reason: the two processes each work the app group id out
+    // for themselves, and they only have to disagree once for every request to
+    // vanish.
+    NSString *base = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@", self.dataUUID];
+    __weak typeof(self) weakSelf = self;
+
+    int startToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".start"].UTF8String, &startToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        // The request carries the id of the CAContext the guest's video is being
+        // rendered into, in the name's 64-bit state. A sample buffer layer holds
+        // no pixels — its video is decoded out of process and reaches the layer
+        // as a hosted context — so this number is the whole of the video, and
+        // the host can host it exactly as the guest does.
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        [weakSelf handleGuestPiPStartWithPayload:state];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipStartToken = @(startToken);
+    }
+
+    int readyToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".videoready"].UTF8String, &readyToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        uint64_t state = 0;
+        notify_get_state(token, &state);
+        [weakSelf handleGuestVideoReady:CGSizeMake(state & 0xFFFF, (state >> 16) & 0xFFFF)];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipReadyToken = @(readyToken);
+    }
+
+    int stopToken = 0;
+    if(notify_register_dispatch([base stringByAppendingString:@".stop"].UTF8String, &stopToken,
+                                dispatch_get_main_queue(), ^(int token) {
+        [weakSelf handleGuestPiPStop];
+    }) == NOTIFY_STATUS_OK) {
+        self.pipStopToken = @(stopToken);
+    }
+}
+
+/// Listens for the guest being refused the microphone.
+///
+/// iOS does not let an app extension record, and every multitask guest is one,
+/// so a call placed in a window like this is silent in both directions — the
+/// Voice Processing unit a VoIP app drives does capture and playback together,
+/// and the refusal stops the whole unit rather than just its microphone half.
+/// Nothing surfaces: the call connects, the timer runs, and neither side is
+/// heard. LCGuestCapture watches for the refusal inside the guest and posts it
+/// here, and the window raises a sheet explaining that the microphone needs
+/// Single Mode, and how to get there.
+///
+/// Registered once the guest is running, which is the earliest anything can fail.
+- (void)beginObservingGuestCaptureRefusals {
+    if(self.captureNotice) return;
+    self.captureNotice = [[LCGuestCaptureNotice alloc] initWithDataUUID:self.dataUUID];
+    self.captureNotice.hostViewController = self;
+}
+
+- (void)endObservingGuestPiPRequests {
+    if(self.pipStartToken) {
+        notify_cancel(self.pipStartToken.intValue);
+        self.pipStartToken = nil;
+    }
+    if(self.pipStopToken) {
+        notify_cancel(self.pipStopToken.intValue);
+        self.pipStopToken = nil;
+    }
+    if(self.pipReadyToken) {
+        notify_cancel(self.pipReadyToken.intValue);
+        self.pipReadyToken = nil;
+    }
+}
+
+/// The guest has a video and has said how big it is, long before anything floats.
+/// Re-arms, so the controller standing ready is the video-shaped one.
+- (void)handleGuestVideoReady:(CGSize)size {
+    // Zeroes withdraw it again: the app's own Picture in Picture switch has been
+    // turned off, or the player the measurement came from has finished. Several
+    // tweaked builds of YouTube put PiP behind a setting, and a window still armed
+    // after it is switched off floats a video the user asked not to have.
+    if(size.width < 1 || size.height < 1) {
+        if(!self.guestHasVideo) return;
+        NSLog(@"[LC] %@ has no video to float any more", self.bundleId);
+        self.guestHasVideo = NO;
+        self.guestVideoSize = CGSizeZero;
+        self.guestVideoRect = CGRectZero;
+        [PiPManager.shared disarmIfInactiveForVC:self];
+        return;
+    }
+    if(self.guestHasVideo && CGSizeEqualToSize(self.guestVideoSize, size)) return;
+    NSLog(@"[LC] %@ has a video, %dx%d", self.bundleId, (int)size.width, (int)size.height);
+    self.guestHasVideo = YES;
+    self.guestVideoSize = size;
+    self.guestVideoRect = CGRectMake(0, 0, size.width, size.height);
+    [PiPManager.shared rearmForVC:self];
+}
+
+- (void)notifyGuestPiPStarted {
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.started", self.dataUUID];
+    notify_post(name.UTF8String);
+}
+
+- (void)requestGuestFloat {
+    if(!self.guestHasVideo) return;
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.float", self.dataUUID];
+    notify_post(name.UTF8String);
+}
+
+- (void)notifyGuestPiPEnded {
+    // The guest has its video layer out of its own tree for as long as the window
+    // is floating, so it has to be told the moment that is over — including when
+    // PiP was ended by the PiP window's own buttons, which the app never sees.
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.ended", self.dataUUID];
+    notify_post(name.UTF8String);
+}
+
+- (void)handleGuestPiPStartWithPayload:(uint64_t)payload {
+    if((uint32_t)payload == 0) {
+        // The guest asked to float but could not find its video, so the whole
+        // window is floated instead — the old behaviour, and better than a PiP
+        // button that does nothing. Its claim to have a video is dropped too:
+        // whatever it reported the shape of, it cannot publish it.
+        NSLog(@"[LC] %@ asked to float but has no video to publish; floating the window", self.bundleId);
+        self.guestHasVideo = NO;
+        self.guestVideoContextId = 0;
+        if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) return;
+        [PiPManager.shared disarmIfInactiveForVC:self];
+        [PiPManager.shared startPiPWithVC:self];
+        return;
+    }
+
+    // Packed by LCGuestPiP: the context id in the low 32 bits, then the video's
+    // width and height in the two 16-bit fields above it.
+    self.guestVideoContextId = (uint32_t)payload;
+    self.guestVideoSize = CGSizeMake((payload >> 32) & 0xFFFF, (payload >> 48) & 0xFFFF);
+
+    // Set by the guest before it posted the request, so it is already there. A
+    // field to a quarter of the state: x, y, width, height.
+    uint64_t rect = 0;
+    int rectToken = 0;
+    NSString *rectName = [NSString stringWithFormat:@"com.kdt.livecontainer.pip.%@.videorect", self.dataUUID];
+    if(notify_register_check(rectName.UTF8String, &rectToken) == NOTIFY_STATUS_OK) {
+        notify_get_state(rectToken, &rect);
+        notify_cancel(rectToken);
+    }
+    CGRect videoRect = CGRectMake(rect & 0xFFFF, (rect >> 16) & 0xFFFF,
+                                  (rect >> 32) & 0xFFFF, (rect >> 48) & 0xFFFF);
+    // Nothing usable reported: show the context whole rather than nothing at all.
+    if(videoRect.size.width < 1 || videoRect.size.height < 1) {
+        videoRect = CGRectMake(0, 0, self.guestVideoSize.width, self.guestVideoSize.height);
+    }
+    self.guestVideoRect = videoRect;
+    NSLog(@"[LC] %@ asked to float, video context %u (%dx%d), picture at %d,%d %dx%d",
+          self.bundleId, self.guestVideoContextId,
+          (int)self.guestVideoSize.width, (int)self.guestVideoSize.height,
+          (int)videoRect.origin.x, (int)videoRect.origin.y,
+          (int)videoRect.size.width, (int)videoRect.size.height);
+    // Already floating: the app asked twice, or asked for something it is
+    // already getting. Starting again would take the window down and put it
+    // back up for no visible reason.
+    if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) return;
+    [PiPManager.shared startPiPWithVC:self];
+}
+
+- (void)handleGuestPiPStop {
+    // Asked through hasShared first, as everywhere else: no manager, no PiP to
+    // leave. A guest asking to stop one it was never in is an ordinary case —
+    // the hook posts whatever the app asks for.
+    if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self]) {
+        [PiPManager.shared stopPiP];
+    }
 }
 
 // Created on first use rather than at init: a window that is never touched

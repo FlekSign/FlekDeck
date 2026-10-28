@@ -69,15 +69,15 @@ static UIEdgeInsets LCInsetsRotated(UIEdgeInsets insets, NSInteger steps) {
 /// host's. A landscape-only guest runs sideways inside a portrait host — its
 /// scene carries its own orientation, and every piece of geometry we hand it
 /// (its frame, and the insets it is told to keep clear) is expressed in that
-/// orientation, not in ours. Asking `statusBarOrientation` describes the bar
-/// and the launcher, not the app being laid out.
+/// orientation, not in ours. The host's orientation describes the bar and the
+/// launcher, not the app being laid out.
 ///
 /// Falls back to the host's while a scene is still coming up and has yet to say
 /// which way it is facing.
 static UIInterfaceOrientation LCGuestSceneOrientation(UIMutableApplicationSceneSettings *settings) {
     UIInterfaceOrientation orientation = settings.interfaceOrientation;
     if(orientation == UIInterfaceOrientationUnknown) {
-        return UIApplication.sharedApplication.statusBarOrientation;
+        return LCHostInterfaceOrientation(nil);
     }
     return orientation;
 }
@@ -137,7 +137,7 @@ static NSInteger LCGuestSelfRotationSteps(UIMutableApplicationSceneSettings *set
 
 /// The orientation the guest's window is actually in.
 ///
-/// `settings.interfaceOrientation` — and `statusBarOrientation` behind it — can
+/// `settings.interfaceOrientation` — and the host's orientation behind it — can
 /// say portrait while the window it describes is 874x402. Every piece of geometry
 /// here is derived from that answer: which way the scene frame is measured, which
 /// edge of the screen the island is on, which insets the guest is handed. Derived
@@ -216,7 +216,7 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
 
 - (void)setupDecoratedView {
     CGFloat navBarHeight = 44;
-    BOOL isLandscape = UIInterfaceOrientationIsLandscape(UIApp.statusBarOrientation);
+    BOOL isLandscape = UIInterfaceOrientationIsLandscape(LCHostInterfaceOrientation(self.view));
     CGRect frame = CGRectMake(0, 0, isLandscape ? 480 : 320, (isLandscape ? 320 : 480) + navBarHeight);
     CGPoint rootViewCenter = self.view.superview.center;
     frame.origin = CGPointMake(rootViewCenter.x - frame.size.width / 2, rootViewCenter.y - frame.size.height / 2);
@@ -301,11 +301,8 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
         UIPasteboard.generalPasteboard.string = @(weakSelf.appSceneVC.pid).stringValue;
     }];
 
-    // Asked through hasShared first, as the dock does. Constructing the PiP
-    // manager claims the audio session — playback, not mixable, and active —
-    // and this menu is built for a look at a card, long before PiP is anywhere
-    // near being chosen: whatever else was playing stopped the moment the menu
-    // opened. If there is no manager there is no PiP, and the answer is known.
+    // Asked through hasShared first, as the dock does: if there is no manager
+    // there is no PiP, and the answer is known without building one.
     BOOL isPiPActive = PiPManager.hasShared && [PiPManager.shared isPiPWithVC:self.appSceneVC];
     UIAction *togglePiP = [UIAction actionWithTitle:isPiPActive ? @"lc.multitask.disablePip".loc : @"lc.multitask.enablePip".loc
                                               image:[UIImage systemImageNamed:isPiPActive ? @"pip.exit" : @"pip.enter"]
@@ -536,6 +533,10 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     // the notice — not one on its way out.
     if(PiPManager.hasShared && [PiPManager.shared isPiPWithVC:vc]) {
         [PiPManager.shared stopPiP];
+    } else if(PiPManager.hasShared) {
+        // Armed but never floated. The controller is bound to a window that has
+        // gone, and holds it; dropping it lets both go.
+        [PiPManager.shared disarmIfInactiveForVC:vc];
     }
 }
 
@@ -578,6 +579,10 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kContentGraceAfterScene * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self reportContentArrived];
     });
+    // The window was brought to the front when it was created, which is before
+    // there was anything in it to float, so the arming that ran then declined.
+    // This is the moment it can be taken up.
+    [MultitaskDockManager.shared refreshPiPArming];
 }
 
 - (void)appSceneVCWillActivateScene:(AppSceneViewController *)vc {
@@ -924,11 +929,41 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
         settings.safeAreaInsetsPortrait = UIEdgeInsetsMake(settings.peripheryInsets.top, settings.peripheryInsets.left, settings.peripheryInsets.bottom, settings.peripheryInsets.right);
     }
 
-
-    
+    [self applyHostStatusBarHeightsToSettings:settings];
 
     safeAreaInsets.bottom = 0;
     return safeAreaInsets;
+}
+
+/// Hands the host's status bar heights to the guest's scene.
+///
+/// SpringBoard tells an app how tall its status bar is through the app's scene,
+/// and a hosted scene carries no heights unless it is given them. The guest's
+/// status bar manager then reports no status bar at all — UIKit takes a height of
+/// zero to mean the bar is hidden, and its frame is empty — although ours is drawn
+/// across the top of a maximized window, over the guest. An app that places its
+/// top bar by that frame puts it underneath ours, where it can be neither seen
+/// nor tapped. Instagram reads its status bar height from that frame.
+///
+/// Every orientation is handed on as the host has it, so a guest turned against
+/// the host still asks for its own: a landscape guest on a phone is told there is
+/// no status bar, as it would be in a scene of its own. A window that starts
+/// below the switcher bar is not under the status bar at all.
+- (void)applyHostStatusBarHeightsToSettings:(UIMutableApplicationSceneSettings *)settings {
+    UIStatusBarManager *hostStatusBar = self.view.window.windowScene.statusBarManager;
+    if(![hostStatusBar respondsToSelector:@selector(defaultStatusBarHeightInOrientation:)] ||
+       ![settings respondsToSelector:@selector(setDefaultStatusBarHeight:forOrientation:)]) {
+        return;
+    }
+    BOOL underStatusBar = MultitaskDockManager.shared.barReservedInsets.top <= 0;
+    const UIInterfaceOrientation orientations[] = {
+        UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown,
+        UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight,
+    };
+    for(size_t i = 0; i < sizeof(orientations) / sizeof(orientations[0]); i++) {
+        CGFloat height = underStatusBar ? [hostStatusBar defaultStatusBarHeightInOrientation:orientations[i]] : 0;
+        [settings setDefaultStatusBarHeight:height / _scaleRatio forOrientation:orientations[i]];
+    }
 }
 
 - (void)updateMaximizedFrameWithSettings:(UIMutableApplicationSceneSettings *)settings {

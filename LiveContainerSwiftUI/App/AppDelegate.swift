@@ -211,17 +211,50 @@ class BetaOverlayManager {
     static let shared = BetaOverlayManager()
     private var overlayWindow: UIWindow?
 
+    /// Whether this device runs a beta build of iOS. Beta builds have a build
+    /// version ending with a lowercase letter (e.g. 22A5307f).
+    static var isBetaiOS: Bool {
+        UIDevice.current.buildVersion?.last?.isLowercase ?? false
+    }
+
+    /// Whether the badge is wanted, given the stored `LCBetaBannerOverride`:
+    /// 0 = auto (show on beta), 1 = force on, 2 = force off.
+    static func isEnabled(override: Int) -> Bool {
+        switch override {
+        case 1: return true
+        case 2: return false
+        default: return isBetaiOS
+        }
+    }
+
+    /// The override that turns the badge on or off on this device. Auto wherever
+    /// auto already gives that answer, so a choice is only stored where it differs
+    /// from the default: a device that moves onto a beta later still gets the
+    /// warning, unless it was turned off while on one.
+    static func override(enabled: Bool) -> Int {
+        if enabled == isBetaiOS { return 0 }
+        return enabled ? 1 : 2
+    }
+
     func show(on scene: UIWindowScene) {
         guard overlayWindow == nil else { return }
 
         let window = PassthroughWindow(windowScene: scene)
         window.windowLevel = .alert + 1
         window.backgroundColor = .clear
-        window.isHidden = false
+        // Not interactive at all, rather than relying on `hitTest` alone. That
+        // override is only asked about touches UIKit delivers inside this process.
+        // A guest app's scene or a system picker underneath is drawn by another
+        // process, and whether its touches get routed past this window before
+        // UIKit is ever asked has not been verified — so the window says it too.
+        // Costs nothing on a window with nothing to touch.
+        window.isUserInteractionEnabled = false
 
         let hosting = UIHostingController(rootView: BetaBadgeView())
         hosting.view.backgroundColor = .clear
         window.rootViewController = hosting
+        // Made visible only once it is fully set up.
+        window.isHidden = false
         overlayWindow = window
     }
 
@@ -234,6 +267,16 @@ class BetaOverlayManager {
 /// A UIWindow subclass that passes through all touches so the badge
 /// doesn't block interaction with the app underneath.
 private class PassthroughWindow: UIWindow {
+    /// Never the key window. Much of the app asks for the key window when it
+    /// means the app's own: the multitask host every guest window is drawn in is
+    /// added to its root view, and guest window controllers become its children.
+    /// Put here, a guest's window would sit above everything with its controls
+    /// dead, since this window turns every touch away, and keyboard shortcuts
+    /// would go nowhere. No touch ever lands here to hand it the role, but UIKit
+    /// also gives it to a window made visible while nothing else is key, and
+    /// `show(on:)` runs whenever the access check happens to finish.
+    override var canBecomeKey: Bool { false }
+
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         // Return nil so all touches pass through to the window below.
         return nil
@@ -261,6 +304,11 @@ private struct BetaBadgeView: View {
             }
         }
         .ignoresSafeArea()
+        // Hidden from VoiceOver. `hitTest` does not apply to accessibility, so
+        // touch exploration over the corner would land on this text instead of the
+        // control beneath it, on every screen. A real beta still has the warning
+        // read out from its card in Settings.
+        .accessibilityHidden(true)
     }
 }
 

@@ -175,8 +175,13 @@ extern const UIApplication *UIApp;
 - (void)setFrame:(CGRect)frame;
 - (void)setLevel:(NSInteger)level;
 - (void)setStatusBarDisabled:(BOOL)disabled;
+- (void)setDefaultStatusBarHeight:(CGFloat)height forOrientation:(UIInterfaceOrientation)orientation;
 - (void)setInterfaceOrientation:(UIInterfaceOrientation)o;
 - (BSSettings *)otherSettings;
+@end
+
+@interface UIStatusBarManager(Multitask)
+- (CGFloat)defaultStatusBarHeightInOrientation:(UIInterfaceOrientation)orientation;
 @end
 
 @interface FBSSceneParameters(Multitask)
@@ -325,4 +330,9 @@ API_AVAILABLE(ios(17.4)) // 17.0
 
 // Not really private ones
 UIEdgeInsets LCUIEdgeInsetsRotateToOrientation(UIEdgeInsets insets, UIInterfaceOrientation orientation);
+/// The orientation of FlekDeck's own interface, from the window scene `view` is
+/// in, or from the foreground scene while it is in none. Use it wherever the
+/// orientation would otherwise be asked of `UIApplication.statusBarOrientation`,
+/// which has no answer for a build against the iOS 27 SDK.
+UIInterfaceOrientation LCHostInterfaceOrientation(UIView *view);
 void UIKitFixesInit(void);

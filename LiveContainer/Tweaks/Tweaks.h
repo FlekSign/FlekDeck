@@ -9,14 +9,19 @@ void swizzle(Class class, SEL originalAction, SEL swizzledAction);
 bool performHookDyldApi(const char* functionName, uint32_t adrpOffset, void** origFunction, void* hookFunction);
 
 void NUDGuestHooksInit(void);
+void NUDGuestFlushOnTerminationInit(void);
+void NUDGuestFlushWhileRunningInit(void);
 void SecItemGuestHooksInit(void);
 void DyldHooksInit(bool hideLiveContainer, bool hookDlopen, uint32_t spoofSDKVersion);
 void NSFMGuestHooksInit(void);
+void NSBundleGuestHooksInit(void);
 void NSURLSCGuestHooksInit(void);
 void initDead10ccFix(void);
 void IDFVHookInit(NSUUID* uuid);
 void LCHostIdentityInit(void);
 void LCAudioMuteInit(NSString* dataUUID);
+void LCGuestPiPInit(NSString* dataUUID);
+void LCGuestCaptureInit(NSString* dataUUID);
 
 @interface NSBundle(LiveContainer)
 - (instancetype)initWithPathForMainBundle:(NSString *)path;

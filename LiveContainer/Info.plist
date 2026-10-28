@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).install.*</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDisplayName</key>
@@ -35,8 +39,20 @@
 	<string>FlekDeck</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- FlekDeck's own version. The LiveContainer release this is built on is
+	     LCUpstreamVersion below; the two move independently. -->
 	<key>CFBundleShortVersionString</key>
-	<string>3.8.7</string>
+	<string>0.2.0</string>
+	<!-- Release date of the version above, shown on the About and License
+	     page in Settings. Bump it together with the version. -->
+	<key>LCReleaseDate</key>
+	<string>2026-10-28</string>
+	<!-- The upstream LiveContainer release this build was merged up to. Shown
+	     under the version in Settings and on the About and License page, so
+	     that a bug report says which upstream a build carries. Bump it when
+	     merging upstream, not when bumping FlekDeck's own version. -->
+	<key>LCUpstreamVersion</key>
+	<string>3.8.10</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
@@ -51,7 +67,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3.8.7</string>
+	<string>0.2.0</string>
 	<key>GCSupportedGameControllers</key>
 	<array>
 		<dict>
@@ -212,6 +228,8 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -220,6 +238,7 @@
 		<string>fetch</string>
 		<string>location</string>
 		<string>nearby-interaction</string>
+		<string>processing</string>
 		<string>remote-notification</string>
 		<string>voip</string>
 	</array>

@@ -2,11 +2,34 @@
 #import "FoundationPrivate.h"
 #import "UIKitPrivate.h"
 #import "utils.h"
+#import <dlfcn.h>
 @import MachO;
+#include <notify.h>
+#include <stdio.h>
+#include <sys/stdio.h>
+#include <sys/clonefile.h>
+#include <sys/stat.h>
+#include <sys/xattr.h>
 
 extern NSUserDefaults *lcUserDefaults;
 extern NSString *lcAppUrlScheme;
 extern NSBundle *lcMainBundle;
+
+// What startBuiltInVPN uses of NetworkExtension. The framework is reached by
+// name rather than linked: this code is loaded into every guest, and only the
+// launch of one that needs JIT has any use for it.
+@interface LCVPNConnection : NSObject
+// An NEVPNStatus: 2 is connecting, 3 connected, 4 reasserting.
+@property(readonly) NSInteger status;
+- (BOOL)startVPNTunnelAndReturnError:(NSError **)error;
+@end
+@interface LCVPNManager : NSObject
+@property(getter=isEnabled) BOOL enabled;
+@property(readonly) LCVPNConnection *connection;
++ (void)loadAllFromPreferencesWithCompletionHandler:(void (^)(NSArray *managers, NSError *error))completionHandler;
+- (void)saveToPreferencesWithCompletionHandler:(void (^)(NSError *error))completionHandler;
+- (void)loadFromPreferencesWithCompletionHandler:(void (^)(NSError *error))completionHandler;
+@end
 
 NSString* FBSOpenApplicationOptionKeyActivateAsClassic = @"__ActivateAsClassic";
 NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
@@ -139,6 +162,10 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
 + (NSString *)certificatePassword {
     NSUserDefaults* nud = NSUserDefaults.lcSharedDefaults ?: NSUserDefaults.standardUserDefaults;
     return [nud objectForKey:@"LCCertificatePassword"];
+}
+
++ (void)requestGuestFlush {
+    notify_post(LCGuestFlushNotification);
 }
 
 + (BOOL)launchToGuestAppWithClassicMode:(NSUInteger)classicMode {
@@ -355,6 +382,38 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
     
 }
 
+// Puts back the copy of a private app's data container that a window was
+// running the app on, before the app starts in single mode. Otherwise only the
+// window closing, or FlekDeck's home screen opening, settles such a copy, and a
+// single-mode launch comes by neither when FlekDeck relaunches itself to make
+// it, or is started by a shortcut: the app started on the older container in
+// Documents, while what it keeps outside that container — its app group
+// folders, its keychain — had gone on with the copy. Then the copy, the later
+// session, was thrown away as the older of the two the next time the home
+// screen opened.
++ (void)settleStagedContainer:(NSString*)folderName {
+    NSURL *appGroupPath = [self appGroupPath];
+    if(!appGroupPath || folderName.length == 0) {
+        return;
+    }
+    NSURL *appGroupLC = [appGroupPath URLByAppendingPathComponent:@"LiveContainer"];
+    NSURL *stagedData = [LCStagingRootURL(appGroupLC) URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", folderName]];
+    if(![NSFileManager.defaultManager fileExistsAtPath:stagedData.path]) {
+        return;
+    }
+    // A window still running on the copy owns it, and settling it from under
+    // that window would lose whatever it writes next.
+    if(LCContainerIsInUse(folderName)) {
+        NSLog(@"[LC] staging: container %@ is still in use by a window, starting the app without it", folderName);
+        return;
+    }
+    NSString *docPath = [NSString stringWithFormat:@"%s/Documents", getenv("LC_HOME_PATH")];
+    NSURL *localData = [NSURL fileURLWithPath:[docPath stringByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", folderName]]];
+    NSLog(@"[LC] staging: settling container %@ before it starts in single mode", folderName);
+    LCReclaimStagedContainer(stagedData, localData, appGroupLC);
+    LCSweepStagingTrash(appGroupLC);
+}
+
 + (NSBundle*)findBundleWithBundleId:(NSString*)bundleId isSharedAppOut:(bool*)isSharedAppOut {
     NSString *docPath = [NSString stringWithFormat:@"%s/Documents", getenv("LC_HOME_PATH")];
     
@@ -450,4 +509,305 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
 
     return result;
 }
+
++ (NSString *)liveProcessBundleIdentifier {
+    // LiveProcess asks this itself when a window enables JIT through a second
+    // instance of the extension. Its bundle ID is whatever this copy was
+    // re-signed as, so it is read rather than guessed.
+    NSBundle *mainBundle = lcMainBundle ?: NSBundle.mainBundle;
+    if([mainBundle.bundlePath hasSuffix:@"PlugIns/LiveProcess.appex"]) {
+        return mainBundle.bundleIdentifier;
+    }
+    
+    // first check if we have LiveProcess extension in our own bundle
+    NSBundle *liveProcessBundle = [NSBundle bundleWithPath:[NSBundle.mainBundle.builtInPlugInsPath stringByAppendingPathComponent:@"LiveProcess.appex"]];
+    if(liveProcessBundle) {
+        return liveProcessBundle.bundleIdentifier;
+    }
+    
+    // in LC2, attempt to guess LC1's LiveProcess extension
+    NSString *bundleID = [NSString stringWithFormat:@"com.kdt.livecontainer.%@.LiveProcess", LCSharedUtils.teamIdentifier];
+    if([NSExtension extensionWithIdentifier:bundleID error:nil]) {
+        return bundleID;
+    }
+    
+    return nil;
+}
+
++ (void)startBuiltInVPNWithCompletionHandler:(void (^)(BOOL requested))completionHandler {
+    void (^finish)(BOOL) = ^(BOOL requested) {
+        if(completionHandler) completionHandler(requested);
+    };
+    // Set by Settings once the user has allowed the VPN configuration. Without
+    // it there is nothing to start, and no reason to load the framework.
+    if(![NSUserDefaults.lcSharedDefaults boolForKey:@"LCBuiltInVPNConfigured"]) {
+        finish(NO);
+        return;
+    }
+    // Written before anything else, as the guest reads it to tell its helper
+    // that the VPN is on its way up and worth waiting a moment for.
+    [NSUserDefaults.lcSharedDefaults setObject:NSDate.date forKey:@"LCBuiltInVPNStartRequested"];
+    
+    dlopen("/System/Library/Frameworks/NetworkExtension.framework/NetworkExtension", RTLD_LAZY);
+    Class managerClass = NSClassFromString(@"NETunnelProviderManager");
+    if(!managerClass) {
+        finish(NO);
+        return;
+    }
+    [managerClass loadAllFromPreferencesWithCompletionHandler:^(NSArray *managers, NSError *error) {
+        // An app is only ever given its own configurations, and FlekDeck has one.
+        LCVPNManager *manager = managers.firstObject;
+        if(!manager) {
+            finish(NO);
+            return;
+        }
+        void (^start)(void) = ^{
+            NSInteger status = manager.connection.status;
+            if(status >= 2 && status <= 4) {
+                finish(YES);
+                return;
+            }
+            finish([manager.connection startVPNTunnelAndReturnError:nil]);
+        };
+        if(manager.isEnabled) {
+            start();
+            return;
+        }
+        // Another VPN has been chosen in Settings since, and iOS only starts
+        // the chosen one.
+        manager.enabled = YES;
+        [manager saveToPreferencesWithCompletionHandler:^(NSError *saveError) {
+            [manager loadFromPreferencesWithCompletionHandler:^(NSError *loadError) {
+                start();
+            }];
+        }];
+    }];
+}
+
 @end
+
+#pragma mark - Window staging
+
+// A window runs a private app on a copy of its data container in the app group
+// ("App group staging" in AppSceneViewController.m explains why). What moves
+// those copies and settles them back lives here rather than there, so that a
+// single-mode launch, which never loads the window code, can settle a copy a
+// window left behind before the app starts on the older container.
+
+static NSURL *LCStagingTrashURL(NSURL *appGroupLC) {
+    return [appGroupLC URLByAppendingPathComponent:@".StagingTrash"];
+}
+
+// Deleting a large tree is one unlink per file. Renaming it into the trash is a
+// single operation, which is all the caller has to wait for; the deletion
+// itself happens later, off any path the user can see.
+BOOL LCDiscardTree(NSURL *url, NSURL *appGroupLC) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if(![fm fileExistsAtPath:url.path]) {
+        return YES;
+    }
+    NSURL *trashDir = LCStagingTrashURL(appGroupLC);
+    [fm createDirectoryAtURL:trashDir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSURL *grave = [trashDir URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    if(rename(url.path.fileSystemRepresentation, grave.path.fileSystemRepresentation) == 0) {
+        return YES;
+    }
+    // Same-volume rename should not fail here, but never leave the caller with
+    // a path it believes is clear.
+    return [fm removeItemAtURL:url error:nil];
+}
+
+void LCSweepStagingTrash(NSURL *appGroupLC) {
+    NSURL *trashDir = LCStagingTrashURL(appGroupLC);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        // Its own manager: NSFileManager.defaultManager is not safe to drive
+        // from an arbitrary queue while the rest of the app is using it.
+        NSFileManager *fm = [NSFileManager new];
+        NSArray<NSURL *> *graves = [fm contentsOfDirectoryAtURL:trashDir includingPropertiesForKeys:nil options:0 error:nil];
+        for(NSURL *grave in graves) {
+            [fm removeItemAtURL:grave error:nil];
+        }
+    });
+}
+
+// clonefile gives an APFS copy-on-write clone of an entire tree in one call: no
+// file data is duplicated and no per-file copy work is done, so it costs a
+// fraction of NSFileManager's copy and almost no disk.
+BOOL LCCloneTree(NSURL *src, NSURL *dst) {
+    if(clonefile(src.path.fileSystemRepresentation, dst.path.fileSystemRepresentation, 0) == 0) {
+        return YES;
+    }
+    // Not APFS, or the two ended up on different volumes. Correctness first.
+    // Logged because the copy is orders of magnitude slower: if staging is ever
+    // sluggish again, this line is the difference between "the clone stopped
+    // working" and "something else is at fault".
+    NSLog(@"[LC] staging: clonefile unavailable for %@ (%s), falling back to a full copy",
+          src.lastPathComponent, strerror(errno));
+    // Clear anything a half-finished clone may have left, or the copy would only
+    // fail again on a destination that already exists.
+    NSError *error = nil;
+    [NSFileManager.defaultManager removeItemAtURL:dst error:nil];
+    if([NSFileManager.defaultManager copyItemAtURL:src toURL:dst error:&error]) {
+        return YES;
+    }
+    NSLog(@"[LC] staging: failed to stage %@: %@", src.lastPathComponent, error);
+    return NO;
+}
+
+// Where this FlekDeck's windows stage their files, relative to the app group's
+// LiveContainer folder. LiveProcess is handed this path, and looks for a staged
+// app there and nowhere else.
+NSString *LCStagingRelativePath(void) {
+    NSString *scheme = NSUserDefaults.lcAppUrlScheme;
+    return [@"Staging" stringByAppendingPathComponent:scheme.length > 0 ? scheme : @"flekdeck"];
+}
+
+NSURL *LCStagingRootURL(NSURL *appGroupLC) {
+    return [appGroupLC URLByAppendingPathComponent:LCStagingRelativePath() isDirectory:YES];
+}
+
+// Timestamps that move when an app starts in a data container. The launcher
+// recreates the `tmp` symlink at the container's root on every start
+// (invokeAppMain in LCBootstrap.m), which moves both the link's own time and the
+// folder's. FlekDeck writing the container's settings file moves only the
+// folder's, so the link is the one to trust for a container in our Documents.
+typedef struct {
+    struct timespec tmpLink;   // {0, 0} when there is no link
+    struct timespec folder;
+} LCContainerStamp;
+
+// Both containers' stamps as they were when the copy was made, kept on the copy.
+typedef struct {
+    LCContainerStamp staged;
+    LCContainerStamp local;
+} LCStagingMark;
+
+static const char *const LCStagingMarkName = "com.flekdeck.staging-mark";
+
+static LCContainerStamp LCReadContainerStamp(NSURL *container) {
+    LCContainerStamp stamp = {{0, 0}, {0, 0}};
+    struct stat st;
+    NSString *tmpLink = [container.path stringByAppendingPathComponent:@"tmp"];
+    if(lstat(tmpLink.fileSystemRepresentation, &st) == 0) {
+        stamp.tmpLink = st.st_mtimespec;
+    }
+    if(stat(container.path.fileSystemRepresentation, &st) == 0) {
+        stamp.folder = st.st_mtimespec;
+    }
+    return stamp;
+}
+
+static BOOL LCTimespecEqual(struct timespec a, struct timespec b) {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
+}
+
+static BOOL LCTimespecIsLater(struct timespec a, struct timespec b) {
+    return a.tv_sec != b.tv_sec ? a.tv_sec > b.tv_sec : a.tv_nsec > b.tv_nsec;
+}
+
+void LCWriteStagingMark(NSURL *staged, NSURL *local) {
+    LCStagingMark mark = { LCReadContainerStamp(staged), LCReadContainerStamp(local) };
+    if(setxattr(staged.path.fileSystemRepresentation, LCStagingMarkName, &mark, sizeof(mark), 0, 0) != 0) {
+        NSLog(@"[LC] staging: could not mark %@: %s", staged.lastPathComponent, strerror(errno));
+    }
+}
+
+// Whether a staged copy of a data container holds a later session than the
+// container in our Documents, and so should replace it.
+//
+// A copy made by this build carries a mark with both containers' stamps from
+// when it was made, so the question is only which of them an app has started in
+// since. That compares each container with itself, which moving the device
+// clock in between cannot upset, and some games are played with the clock moved
+// back and forth. The copy wins if an app started in it and not in the one in
+// Documents. An app started in both means the one in Documents was opened in
+// single mode after the copy's window was lost with FlekDeck, so it is the later
+// of the two. Single mode settles the copy before it starts now (see
+// +settleStagedContainer:), which leaves that to copies from builds before it,
+// and to a copy a window still held when single mode began.
+//
+// Copies left by older builds carry no mark, and all there is to compare then is
+// when each was last started.
+static BOOL LCStagedContainerIsNewer(NSURL *staged, NSURL *local) {
+    LCContainerStamp stagedNow = LCReadContainerStamp(staged);
+    LCContainerStamp localNow = LCReadContainerStamp(local);
+    LCStagingMark mark;
+    if(getxattr(staged.path.fileSystemRepresentation, LCStagingMarkName, &mark, sizeof(mark), 0, 0) == sizeof(mark)) {
+        BOOL startedInCopy = !LCTimespecEqual(stagedNow.tmpLink, mark.staged.tmpLink) ||
+                             !LCTimespecEqual(stagedNow.folder, mark.staged.folder);
+        BOOL startedInLocal = !LCTimespecEqual(localNow.tmpLink, mark.local.tmpLink);
+        return startedInCopy && !startedInLocal;
+    }
+    struct timespec stagedStart = stagedNow.tmpLink.tv_sec || stagedNow.tmpLink.tv_nsec ? stagedNow.tmpLink : stagedNow.folder;
+    struct timespec localStart = localNow.tmpLink.tv_sec || localNow.tmpLink.tv_nsec ? localNow.tmpLink : localNow.folder;
+    return LCTimespecIsLater(stagedStart, localStart);
+}
+
+// Whether a process that is still running holds this container. The lock names
+// the process that took it and reads as free once that process has gone, so a
+// copy left by a FlekDeck that was killed is not mistaken for one in use.
+BOOL LCContainerIsInUse(NSString *folderName) {
+    return [LCSharedUtils getContainerUsingLCSchemeWithFolderName:folderName] != nil;
+}
+
+// Settles a staged copy of a data container against the one in our Documents,
+// keeping whichever holds the later session and discarding the other. The caller
+// makes sure no running process still holds the copy.
+//
+// Runs when a window closes, and for a copy whose window never got to close,
+// because FlekDeck was killed with it open: when the home screen opens, before
+// the same container is staged again, and before the app starts in single mode.
+// Putting the copy back unconditionally lost data
+// both ways round. A copy found at launch can be older than the container in
+// Documents if the app has been opened in single mode since. And with "Allow
+// Private Data access from LiveProcess" on, a window can run on the container in
+// Documents directly, leaving its copy untouched to be swapped back over it.
+void LCReclaimStagedContainer(NSURL *stagedData, NSURL *localData, NSURL *appGroupLC) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if(![fm fileExistsAtPath:stagedData.path]) {
+        return;
+    }
+    BOOL localExists = [fm fileExistsAtPath:localData.path];
+    if(localExists && !LCStagedContainerIsNewer(stagedData, localData)) {
+        LCDiscardTree(stagedData, appGroupLC);
+        return;
+    }
+    // Swapped back rather than deleted-and-copied. Besides trading a walk of
+    // every file for a single rename, this removes the window in which the
+    // local container had been deleted and its replacement not yet written:
+    // being killed in there used to lose the guest's data outright.
+    //
+    // Nothing below clears the local container until its replacement is
+    // somewhere safe, so a failure at any step costs the session's changes
+    // at worst, never the container.
+    if(!localExists) {
+        [fm createDirectoryAtURL:localData.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    if(localExists &&
+       renameatx_np(AT_FDCWD, stagedData.path.fileSystemRepresentation,
+                    AT_FDCWD, localData.path.fileSystemRepresentation,
+                    RENAME_SWAP) == 0) {
+        // The swap left the older copy where the staged one was.
+        LCDiscardTree(stagedData, appGroupLC);
+    } else if(!localExists &&
+              rename(stagedData.path.fileSystemRepresentation, localData.path.fileSystemRepresentation) == 0) {
+        // First run of this container, so there was nothing to swap with.
+    } else {
+        // Swapping is unsupported here. Land a copy beside the container
+        // first and only then put it in place.
+        NSURL *incoming = [localData URLByAppendingPathExtension:@"incoming"];
+        LCDiscardTree(incoming, appGroupLC);
+        if(!LCCloneTree(stagedData, incoming)) {
+            NSLog(@"[LC] staging: could not copy container %@ back, leaving it staged", localData.lastPathComponent);
+            return;
+        }
+        LCDiscardTree(localData, appGroupLC);
+        if(rename(incoming.path.fileSystemRepresentation, localData.path.fileSystemRepresentation) != 0) {
+            NSLog(@"[LC] staging: failed to reclaim container %@: %s", localData.lastPathComponent, strerror(errno));
+            return;
+        }
+        LCDiscardTree(stagedData, appGroupLC);
+    }
+    // The mark describes a copy, and this is the container in Documents now.
+    removexattr(localData.path.fileSystemRepresentation, LCStagingMarkName, 0);
+}

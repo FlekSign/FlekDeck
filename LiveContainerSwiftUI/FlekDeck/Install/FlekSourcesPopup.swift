@@ -163,31 +163,62 @@ struct FlekSourcesPopup: View {
         }
     }
 
+    /// What a new source's address answered with, read off the main thread.
+    private struct CheckedSource: Sendable {
+        let name: String?
+        let iconUrl: String
+        let apps: [FSAppModel]
+    }
+
     private func addRepository() async {
-        let trimmed = newRepoURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed) else {
-            await showErr("lc.appList.urlInvalidError".loc); return
+        var trimmed = newRepoURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An address typed without its scheme is a web address.
+        if !trimmed.isEmpty, !trimmed.contains("://") {
+            trimmed = "https://" + trimmed
+        }
+        guard let url = URL(string: trimmed), url.host != nil else {
+            showErr("lc.appList.urlInvalidError".loc); return
+        }
+        // A source is listed once: twice, its apps would show twice everywhere.
+        if repos.contains(where: { $0.sourceURL == trimmed }) {
+            showErr("lc.flek.sourceAlreadyAdded".loc); return
         }
         await MainActor.run { isAdding = true }
         defer { Task { @MainActor in isAdding = false } }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                await showErr("lc.flek.invalidSource".loc); return
+            // Not left waiting a minute on an address that does not answer.
+            let (data, _) = try await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 30))
+            // Read as the catalog it is to be, off the main thread, as a big
+            // one takes a moment: an object without apps is no source.
+            let checked = await Task.detached(priority: .userInitiated) { () -> CheckedSource? in
+                guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      let apps = try? SourceAppsListViewModel.decodeCustomRepo(data) else {
+                    return nil
+                }
+                var iconUrl = (json["iconURL"] as? String) ?? ""
+                if iconUrl.isEmpty, let meta = json["META"] as? [String: Any] {
+                    iconUrl = (meta["repoIcon"] as? String) ?? ""
+                }
+                return CheckedSource(name: json["name"] as? String, iconUrl: iconUrl, apps: apps)
+            }.value
+            guard let checked else {
+                showErr("lc.flek.invalidSource".loc); return
             }
-            let name = (json["name"] as? String) ?? url.host ?? trimmed
-            var iconUrl = (json["iconURL"] as? String) ?? ""
-            if iconUrl.isEmpty, let meta = json["META"] as? [String: Any] {
-                iconUrl = (meta["repoIcon"] as? String) ?? ""
+            // What was read is kept, so that the source shows and is searched
+            // at once rather than downloaded again.
+            let source = trimmed
+            Task.detached(priority: .utility) {
+                RepoCatalogCache.shared.store(apps: checked.apps, for: source)
             }
-            let repo = AppRepository(name: name, iconUrl: iconUrl, sourceURL: trimmed, isSelected: false)
+            let repo = AppRepository(name: checked.name ?? url.host ?? trimmed, iconUrl: checked.iconUrl,
+                                     sourceURL: trimmed, isSelected: false)
             await MainActor.run {
                 repos.append(repo)
                 save()
                 newRepoURL = ""
             }
         } catch {
-            await showErr(error.localizedDescription)
+            showErr(error.localizedDescription)
         }
     }
 

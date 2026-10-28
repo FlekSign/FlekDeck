@@ -1,0 +1,8 @@
+_pairable_host_prepare
+_pairable_host_accept_fd
+_pairable_host_free
+_rp_pairing_file_to_bytes
+_rp_pairing_file_free
+_idevice_error_free
+_idevice_string_free
+_idevice_data_free

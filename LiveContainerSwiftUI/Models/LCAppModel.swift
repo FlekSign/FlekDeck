@@ -50,9 +50,8 @@ class LCAppModel: ObservableObject, Hashable {
     @Published var uiDefaultDataFolder : String?
     @Published var uiContainers : [LCContainer]
     @Published var uiSelectedContainer : LCContainer?
-#if is32BitSupported
     @Published var uiIs32bit : Bool
-#endif
+    @Published var uiIs32bitEmulator : Bool
     @Published var uiTweakFolder : String? {
         didSet {
             appInfo.tweakFolder = uiTweakFolder
@@ -118,7 +117,32 @@ class LCAppModel: ObservableObject, Hashable {
             appInfo.jitLaunchScriptJs = jitLaunchScriptJs
         }
     }
-
+    /// The script as an external JIT enabler takes it: its contents,
+    /// base64-encoded. One of the scripts that ship in StikJIT.framework is
+    /// stored as its path inside the bundle, which only built-in JIT reads, so
+    /// it is read out here.
+    var jitLaunchScriptJsResolved: String? {
+        get {
+            var script = jitLaunchScriptJs
+            // A 32-bit app offers no choice of script, and where TXM is present
+            // its translation layer needs the universal one.
+            if (script ?? "").isEmpty, appInfo.is32bit, LCUtils.isTXMScriptRequired() {
+                script = "/Frameworks/StikJIT.framework/universal.js"
+            }
+            guard let script, script.hasPrefix("/") else {
+                return script
+            }
+            let url = URL(fileURLWithPath: Bundle.main.bundlePath.appending(script))
+            return (try? Data(contentsOf: url))?.base64EncodedString()
+        }
+    }
+    
+    @Published var uiSelected32BitEmulator : String {
+        didSet {
+            appInfo.selected32BitEmulator = uiSelected32BitEmulator
+        }
+    }
+    
     @Published var uiSpoofSDKVersion : Bool {
         didSet {
             appInfo.spoofSDKVersion = uiSpoofSDKVersion
@@ -275,11 +299,11 @@ class LCAppModel: ObservableObject, Hashable {
         self.uiDontLoadTweakLoader = appInfo.dontLoadTweakLoader
         self.uiDontSign = appInfo.dontSign
         self.jitLaunchScriptJs = appInfo.jitLaunchScriptJs
+        self.uiSelected32BitEmulator = appInfo.selected32BitEmulator ?? ""
         self.uiSpoofSDKVersion = appInfo.spoofSDKVersion
         self.uiRemark = appInfo.remark ?? ""
-#if is32BitSupported
         self.uiIs32bit = appInfo.is32bit
-#endif
+        self.uiIs32bitEmulator = appInfo.is32bitEmulator
         for container in uiContainers {
             if container.folderName == uiDefaultDataFolder {
                 self.uiSelectedContainer = container;
@@ -357,6 +381,7 @@ class LCAppModel: ObservableObject, Hashable {
         }
         
         // find a free lc to run non-multitasking shared app. If none, ask user if they want to terminate all multitasking apps
+        var endsWindows = false
         if MultitaskManager.isMultitasking() && !multitask {
             if self.uiIsShared {
                 var freeScheme: String? = nil
@@ -397,6 +422,7 @@ class LCAppModel: ObservableObject, Hashable {
             guard let ans = await delegate?.showRunWhenMultitaskAlert(), ans else {
                 return
             }
+            endsWindows = true
         }
         
         await MainActor.run {
@@ -409,6 +435,21 @@ class LCAppModel: ObservableObject, Hashable {
         }
         try await signApp(force: false)
         
+        var jitNeeded = appInfo.isJITNeeded || appInfo.is32bit
+        if let forceJIT {
+            jitNeeded = forceJIT
+        }
+#if targetEnvironment(simulator)
+        jitNeeded = false
+#else
+        if jitNeeded {
+            // Asked before the app is recorded below as the one to start: a
+            // guest started without a working JIT setup fails as it launches,
+            // which the user only learns the next time FlekDeck opens.
+            try await FlekJITSetup.ensureReady()
+        }
+#endif
+        
         if let bundleIdOverride {
             UserDefaults.standard.set(bundleIdOverride, forKey: "selected")
         } else {
@@ -418,16 +459,19 @@ class LCAppModel: ObservableObject, Hashable {
             UserDefaults.standard.setValue(urlStr, forKey: "launchAppUrlScheme")
         }
         UserDefaults.standard.set(uiSelectedContainer?.folderName, forKey: "selectedContainer")
-        var is32bit = false
-        
-        #if is32BitSupported
-        is32bit = appInfo.is32bit
-        #endif
-        var jitNeeded = appInfo.isJITNeeded
-        if let forceJIT {
-            jitNeeded = forceJIT
+
+        if endsWindows {
+            // Running in single mode relaunches FlekDeck with SIGKILL, and the
+            // windows' processes go with it. Have them write out first, here
+            // rather than before signing and the checks above, which can take
+            // long enough for a window to change something again. A pause
+            // rather than a wait for each window, since a guest has no way to
+            // answer; writing out takes a fraction of this.
+            LCSharedUtils.requestGuestFlush()
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
-        if jitNeeded || is32bit {
+
+        if jitNeeded {
             if multitask, #available(iOS 17.4, *) {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     LCUtils.launchMultitaskGuestApp(appInfo.displayName()) { pidNumber, error in
@@ -440,7 +484,7 @@ class LCAppModel: ObservableObject, Hashable {
                             return
                         }
                         Task {
-                            if let scriptData = self.jitLaunchScriptJs, !scriptData.isEmpty {
+                            if let scriptData = self.jitLaunchScriptJsResolved, !scriptData.isEmpty {
                                 await self.delegate?.jitLaunch(withPID: pidNumber.intValue, withScript: scriptData, appName: self.appInfo.displayName())
                             } else {
                                 await self.delegate?.jitLaunch(withPID: pidNumber.intValue, withScript: nil, appName: self.appInfo.displayName())
@@ -451,7 +495,7 @@ class LCAppModel: ObservableObject, Hashable {
                 }
             } else {
                 // Non-multitask JIT flow remains unchanged
-                if let scriptData = jitLaunchScriptJs, !scriptData.isEmpty {
+                if let scriptData = jitLaunchScriptJsResolved, !scriptData.isEmpty {
                     await delegate?.jitLaunch(withScript: scriptData, appName: self.appInfo.displayName(), classicMode: classicMode)
                 } else {
                     await delegate?.jitLaunch(appName: self.appInfo.displayName(), classicMode: classicMode)
@@ -522,28 +566,36 @@ class LCAppModel: ObservableObject, Hashable {
             }
         }
         
+        // The Tweaks folder the guest loads from (LCBootstrap): the app group's
+        // for a shared app, this FlekDeck's own for a private one.
+        let tweakRoot = appInfo.isShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath
+        
         // sign its tweak
-        guard let tweakFolder = appInfo.tweakFolder else {
-            return
+        if let tweakFolder = appInfo.tweakFolder {
+            try await LCUtils.signTweaks(tweakFolderUrl: tweakRoot.appendingPathComponent(tweakFolder), force: force) { p in
+                Task{ await MainActor.run {
+                    self.isSigningInProgress = true
+                }}
+            }
         }
         
-        let tweakFolderUrl : URL
-        if(appInfo.isShared) {
-            tweakFolderUrl = LCPath.lcGroupTweakPath.appendingPathComponent(tweakFolder)
-        } else {
-            tweakFolderUrl = LCPath.tweakPath.appendingPathComponent(tweakFolder)
-        }
-        try await LCUtils.signTweaks(tweakFolderUrl: tweakFolderUrl, force: force) { p in
-            Task{ await MainActor.run {
-                self.isSigningInProgress = true
-            }}
-        }
-        
-        // sign global tweak
-        try await LCUtils.signTweaks(tweakFolderUrl: LCPath.tweakPath, force: force) { p in
-            Task{ await MainActor.run {
-                self.isSigningInProgress = true
-            }}
+        // sign global tweak. TweakLoader loads these into every app, whether or not
+        // it has a folder of its own; returning early for an app without one left a
+        // newly imported global tweak unsigned, and dlopen refused it ("code
+        // signature invalid"). A shared app's root may not exist yet.
+        if FileManager.default.fileExists(atPath: tweakRoot.path) {
+            do {
+                try await LCUtils.signTweaks(tweakFolderUrl: tweakRoot, force: force) { p in
+                    Task{ await MainActor.run {
+                        self.isSigningInProgress = true
+                    }}
+                }
+            } catch let error where !force {
+                // One global tweak that can't be signed must not keep every app
+                // from opening; it only fails to load, and TweakLoader says so in
+                // the app. Force Sign still reports it here.
+                NSLog("[LC] Global tweaks not signed: \(error.localizedDescription)")
+            }
         }
     }
 

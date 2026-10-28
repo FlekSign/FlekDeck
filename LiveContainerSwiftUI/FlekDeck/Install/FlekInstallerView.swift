@@ -23,6 +23,10 @@ extension Notification.Name {
     /// An app page is waiting in `FlekInstallerView.pendingDetailRequest` for an
     /// installer that is already open to pick up.
     static let flekInstallerOpenAppDetail = Notification.Name("FlekInstallerOpenAppDetail")
+    /// A URL or URL scheme the Installer was given to open, for the home
+    /// screen to open: it is what launches apps and has the browser. The
+    /// object is the text as typed.
+    static let flekOpenURL = Notification.Name("FlekOpenURL")
 }
 
 struct FlekInstallerView: View {
@@ -31,7 +35,7 @@ struct FlekInstallerView: View {
 
     @EnvironmentObject private var sharedModel: SharedModel
     @ObservedObject private var installQueue = LCInstallQueue.shared
-    @StateObject private var viewModel = FlekstoreAppsListViewModel()
+    @StateObject private var viewModel = SourceAppsListViewModel()
     @StateObject private var repoSearch = MultiRepoSearchModel()
 
     @State private var repos: [AppRepository] = []
@@ -44,7 +48,11 @@ struct FlekInstallerView: View {
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var importUrlHelper = InputHelper()
+    /// Asks for a URL or URL scheme to open, as LiveContainer's link button did.
+    @StateObject private var openURLHelper = InputHelper()
     @State private var choosingIPA = false
+    /// Counts source switches, so that a slow one is not finished after a later one.
+    @State private var switchCount = 0
     @State private var switcherBarVisible = true
     @State private var barIsLandscape = false
     /// Bumped to (re)center the selected repo in the pill after the sources
@@ -226,6 +234,14 @@ struct FlekInstallerView: View {
             if let selectedURL, let match = repos.first(where: { $0.sourceURL == selectedURL }) {
                 selectedRepoID = match.id
             }
+            // The source shown was removed: the first one left, rather than its
+            // apps under no pill, still there to refresh and install.
+            if case .custom(let shownURL) = viewModel.repository,
+               !repos.contains(where: { $0.sourceURL == shownURL }),
+               let first = repos.first {
+                selectedRepoID = first.id
+                Task { await switchTo(first) }
+            }
             // Let the sheet finish dismissing and repos reload before scrolling
             // so the centering animation is actually visible in the pill.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -263,16 +279,39 @@ struct FlekInstallerView: View {
             placeholder: "https://",
             action: { newText in
                 importUrlHelper.close(result: newText)
-                if let t = newText, !t.isEmpty {
-                    LCInstallQueue.shared.enqueue(
-                        url: t,
-                        name: Self.importName(from: t),
-                        iconURL: nil,
-                        isManual: true
-                    )
+                let t = (newText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { return }
+                // A link to a manifest rather than an IPA, which the home
+                // screen resolves, as it does one opened with Open URL.
+                if t.lowercased().hasPrefix("itms-services:") {
+                    NotificationCenter.default.post(name: .flekOpenURL, object: t)
+                    onClose()
+                    return
                 }
+                LCInstallQueue.shared.enqueue(
+                    url: t,
+                    name: Self.importName(from: t),
+                    iconURL: nil,
+                    isManual: true
+                )
             },
             actionCancel: { _ in importUrlHelper.close(result: nil) }
+        )
+        .textFieldAlert(
+            isPresented: $openURLHelper.show,
+            title: "lc.appList.enterUrlTip".loc,
+            text: $openURLHelper.initVal,
+            placeholder: "scheme://",
+            action: { newText in
+                openURLHelper.close(result: newText)
+                let link = (newText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !link.isEmpty else { return }
+                // Handed on before the Installer goes, so that the home screen,
+                // which opens it, knows to wait for it to have gone.
+                NotificationCenter.default.post(name: .flekOpenURL, object: link)
+                onClose()
+            },
+            actionCancel: { _ in openURLHelper.close(result: nil) }
         )
     }
 
@@ -602,6 +641,13 @@ struct FlekInstallerView: View {
                     Text("Nothing found")
                         .font(.system(size: 20))
                         .foregroundStyle(Color(.label))
+                    if let note = repoSearch.sourcesNote {
+                        Text(note)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94)))
@@ -660,6 +706,15 @@ struct FlekInstallerView: View {
                             }
                         }
                     }
+                }
+                // Under everything found, as what is missing from it.
+                if let note = repoSearch.sourcesNote {
+                    Text(note)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
             }
             .padding(.horizontal, 16)
@@ -751,6 +806,13 @@ struct FlekInstallerView: View {
                     Task { _ = await importUrlHelper.open() }
                 } label: {
                     Label("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus")
+                }
+                // LiveContainer's link button: a URL scheme opens the installed
+                // app that takes it, a web address the browser inside FlekDeck.
+                Button {
+                    Task { _ = await openURLHelper.open() }
+                } label: {
+                    Label("lc.flek.openURL".loc, systemImage: "link")
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -922,11 +984,19 @@ struct FlekInstallerView: View {
         if searchActive { closeSearch() }
         let source = Self.source(for: repo)
         Self.sessionSelectedRepoURL = repo.sourceURL
+        switchCount &+= 1
+        let thisSwitch = switchCount
         // Custom repos are pre-fetched to disk; show that cache instantly and
         // refresh in the background instead of flashing an empty loading state.
+        // Read off the main thread, as a big catalog takes a moment, and not
+        // at all where the list is still held in memory.
         var disk: [FSAppModel]? = nil
-        if case .custom(let url) = source {
-            disk = RepoCatalogCache.shared.cachedApps(for: url)
+        if case .custom(let url) = source, !viewModel.hasMemoryCache(for: source) {
+            disk = await Task.detached(priority: .userInitiated) {
+                RepoCatalogCache.shared.cachedApps(for: url)
+            }.value
+            // Another source was picked while this one was being read.
+            guard thisSwitch == switchCount else { return }
         }
         await viewModel.switchRepository(to: source, diskPreloaded: disk)
     }
@@ -967,7 +1037,7 @@ struct FlekInstallerView: View {
 
     // MARK: Repo helpers
 
-    static func source(for repo: AppRepository) -> FlekstoreAppsListViewModel.RepositorySource {
+    static func source(for repo: AppRepository) -> SourceAppsListViewModel.RepositorySource {
         .custom(url: repo.sourceURL)
     }
 
@@ -1342,9 +1412,12 @@ struct FlekInstallerSkeletonRow: View {
     }
 }
 
-/// Animated checkmark shown briefly after a successful install.
+/// Animated checkmark shown briefly after a successful install, and larger
+/// where a pairing file has just been received.
 struct FlekRowCheckmark: View {
     let accent: Color
+    /// Across. The check's stroke and the room around it go by it.
+    var size: CGFloat = 30
     @State private var trimEnd: CGFloat = 0
 
     var body: some View {
@@ -1353,10 +1426,10 @@ struct FlekRowCheckmark: View {
                 .fill(Color.green)
             CheckmarkShape()
                 .trim(from: 0, to: trimEnd)
-                .stroke(.white, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                .padding(8)
+                .stroke(.white, style: StrokeStyle(lineWidth: size / 12, lineCap: .round, lineJoin: .round))
+                .padding(size * 4 / 15)
         }
-        .frame(width: 30, height: 30)
+        .frame(width: size, height: size)
         .onAppear {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             withAnimation(.easeOut(duration: 0.35).delay(0.1)) {

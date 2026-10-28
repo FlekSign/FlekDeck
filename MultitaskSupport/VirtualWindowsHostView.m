@@ -164,6 +164,9 @@ static BOOL LCRotationIsLocked(void) {
     UIView *frontmostView = self.subviews.lastObject;
     if(!frontmostView.hidden) {
         DecoratedAppSceneViewController *decoratedVC = (id)frontmostView._viewDelegate;
+        // Settings and the Installer share this host as SwiftUI pages,
+        // not guest apps. Leave their tap to UIKit.
+        if(![decoratedVC isKindOfClass:DecoratedAppSceneViewController.class]) return NO;
         [decoratedVC.appSceneVC handleStatusBarTapAction:action];
     }
     return !frontmostView.hidden;

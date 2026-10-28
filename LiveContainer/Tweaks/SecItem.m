@@ -110,10 +110,32 @@ OSStatus new_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUp
     return status;
 }
 
+// Generic and internet passwords: what a login is kept in, and always added
+// through new_SecItemAdd, so always tagged with the container they belong to.
+// Keys are not: the ones made through SecKeyCreateRandomKey and its kin never
+// get the tag.
+static BOOL isPasswordClass(id itemClass) {
+    return [itemClass isEqual:(__bridge id)kSecClassGenericPassword] ||
+           [itemClass isEqual:(__bridge id)kSecClassInternetPassword];
+}
+
 OSStatus new_SecItemDelete(CFDictionaryRef query){
     NSMutableDictionary *queryCopy = ((__bridge NSDictionary *)query).mutableCopy;
     queryCopy[(__bridge id)kSecAttrAccessGroup] = accessGroup;
+    // Only this container's own passwords. accessGroup can be shared by every
+    // container of every app, and many apps clear the keychain out whenever they
+    // believe they have just been installed — in a new container, or one whose
+    // preferences were lost — which signed every other app out along with them.
+    // Keys stay unscoped, since a tag they do not carry would put them out of
+    // reach of their own app.
+    if(isPasswordClass(queryCopy[(__bridge id)kSecClass])) {
+        queryCopy[@"alis"] = containerId;
+    }
     OSStatus status = orig_SecItemDelete((__bridge CFDictionaryRef)queryCopy);
+    if(status == errSecParam && queryCopy[@"alis"]) {
+        [queryCopy removeObjectForKey:@"alis"];
+        status = orig_SecItemDelete((__bridge CFDictionaryRef)queryCopy);
+    }
     if(status == errSecParam) {
         [queryCopy removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
         status = orig_SecItemDelete((__bridge CFDictionaryRef)queryCopy);

@@ -42,6 +42,13 @@ final class InstallItem: Identifiable, Equatable {
     var phase: InstallPhase = .queued
     /// Download progress 0…1
     var downloadProgress: Double = 0
+    /// Bytes received and expected. `totalBytes` stays 0 when the server sends no
+    /// length, and `downloadProgress` with it.
+    var downloadedBytes: Int64 = 0
+    var totalBytes: Int64 = 0
+    /// The name inside the bundle, once extraction has read it — the first real
+    /// name a hand-started install has.
+    var resolvedName: String?
     /// Install (decompress + sign) progress 0…1
     var installProgress: Double = 0
 
@@ -170,18 +177,23 @@ final class LCInstallQueue: ObservableObject {
         let item = InstallItem(url: url, name: name, iconURL: iconURL, isManual: isManual,
                                overrides: overrides)
         items.append(item)
+        // Called from a foreground user action, which is the only point the system
+        // accepts a continued-processing submission from.
+        LCInstallBackgroundTask.begin(for: item)
         startNextDownloads()
         updateIdleTimer()
     }
 
     func cancel(_ item: InstallItem) {
+        // An app being installed cannot be stopped halfway. Letting the queue
+        // go on meanwhile would install two at once, and this one would be
+        // installed all the same.
+        guard item.phase != .installing else { return }
         item.downloadHelper?.cancel()
         item.progressCancellable = nil
         item.downloadingCancellable = nil
-        let wasInstalling = item.phase == .installing
         item.phase = .cancelled
         items.removeAll { $0.id == item.id }
-        if wasInstalling { isInstalling = false }
         objectWillChange.send()
         startNextDownloads()
         processInstallQueue()
@@ -265,12 +277,10 @@ final class LCInstallQueue: ObservableObject {
     /// downloading / waiting / installing), and is re-enabled once the queue
     /// drains. Note this only suppresses the *automatic* idle lock — it can't
     /// stop a manual lock (power button) or keep work running once the app is
-    /// actually suspended in the background.
+    /// actually suspended in the background. The timer is shared with other
+    /// waits, so it goes through FlekKeepAwake rather than being set here.
     private func updateIdleTimer() {
-        let shouldStayAwake = items.contains { isActive($0) }
-        if UIApplication.shared.isIdleTimerDisabled != shouldStayAwake {
-            UIApplication.shared.isIdleTimerDisabled = shouldStayAwake
-        }
+        FlekKeepAwake.set(items.contains { isActive($0) }, for: .installs)
     }
 
     private func cleanupItem(_ item: InstallItem) {
@@ -331,9 +341,13 @@ final class LCInstallQueue: ObservableObject {
         // Observe download progress via Combine
         item.progressCancellable = helper.$downloadProgress
             .receive(on: DispatchQueue.main)
-            .sink { [weak self, weak item] progress in
+            .sink { [weak self, weak item, weak helper] progress in
                 guard let self, let item else { return }
                 item.downloadProgress = Double(progress)
+                if let helper {
+                    item.downloadedBytes = helper.downloadedSize
+                    item.totalBytes = helper.totalSize
+                }
                 self.objectWillChange.send()
             }
 

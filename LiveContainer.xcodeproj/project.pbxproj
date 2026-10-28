@@ -32,8 +32,13 @@
 		E1292C0A2DCA43540065E12D /* utils.m in Sources */ = {isa = PBXBuildFile; fileRef = 172CA85E2D9D721700CF6989 /* utils.m */; };
 		E1292C0B2DCA43560065E12D /* LCBootstrap.m in Sources */ = {isa = PBXBuildFile; fileRef = 172CA85A2D9D721700CF6989 /* LCBootstrap.m */; };
 		E1292C132DCA46070065E12D /* main.c in Sources */ = {isa = PBXBuildFile; fileRef = E1292C032DCA3C160065E12D /* main.c */; };
+		E15C6F2F30440EAD00FEC6BD /* StikJITHeadless.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E15C6F2830440EAD00FEC6BD /* StikJITHeadless.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E16D95742E1CD2980068EB63 /* LCMachOUtils.m in Sources */ = {isa = PBXBuildFile; fileRef = E16D94DE2E1CC8200068EB63 /* LCMachOUtils.m */; };
 		E16D95752E1CD2B90068EB63 /* LiveContainerShared.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E1292BD62DCA3B660065E12D /* LiveContainerShared.framework */; };
+		E1946AD83041BFF8005CBEDD /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E1946AD63041BFDD005CBEDD /* IOKit.framework */; };
+		E1F04CE730527A2200EABBF1 /* StikJIT.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E1F04CE630527A2200EABBF1 /* StikJIT.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F1EC0DE1305600000A00000D /* LoopbackVPN.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F1EC0DE1305600000A000002 /* LoopbackVPN.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F1EC0DE2305700000B000002 /* IdevicePairing.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F1EC0DE2305700000B000001 /* IdevicePairing.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -100,6 +105,20 @@
 			remoteGlobalIDString = E1292BD52DCA3B660065E12D;
 			remoteInfo = LiveContainerShared;
 		};
+		E15C6F2C30440EAD00FEC6BD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 17DCE9952C7067EC00731D42 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E15C6F2730440EAD00FEC6BD;
+			remoteInfo = StikJITHeadless;
+		};
+		F1EC0DE1305600000A00000B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 17DCE9952C7067EC00731D42 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F1EC0DE1305600000A000001;
+			remoteInfo = LoopbackVPN;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -116,6 +135,9 @@
 				E1292BEC2DCA3B670065E12D /* LiveContainerShared.framework in Embed Frameworks */,
 				17413FBC2D9C0BAE00F3F928 /* LiveContainerSwiftUI.framework in Embed Frameworks */,
 				174140942D9C0E8200F3F928 /* ZSign.dylib in Embed Frameworks */,
+				E15C6F2F30440EAD00FEC6BD /* StikJITHeadless.framework in Embed Frameworks */,
+				E1F04CE730527A2200EABBF1 /* StikJIT.framework in Embed Frameworks */,
+				F1EC0DE2305700000B000002 /* IdevicePairing.dylib in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 1;
@@ -147,6 +169,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				17E23DE92F443A9300C55733 /* ShareExtension.appex in Embed Foundation Extensions */,
+				F1EC0DE1305600000A00000D /* LoopbackVPN.appex in Embed Foundation Extensions */,
 				17CAED2C2F234814008B1977 /* LaunchAppExtension.appex in Embed Foundation Extensions */,
 				E1292AF32DCA3A660065E12D /* LiveProcess.appex in Embed Foundation Extensions */,
 			);
@@ -183,21 +206,25 @@
 		E1292AE52DCA3A660065E12D /* LiveProcess.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LiveProcess.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1292BD62DCA3B660065E12D /* LiveContainerShared.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LiveContainerShared.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1292C032DCA3C160065E12D /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
+		E15C6F2830440EAD00FEC6BD /* StikJITHeadless.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = StikJITHeadless.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		E16D94DE2E1CC8200068EB63 /* LCMachOUtils.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = LCMachOUtils.m; sourceTree = "<group>"; };
 		E16D95762E1CD49E0068EB63 /* LCMachOUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LCMachOUtils.h; sourceTree = "<group>"; };
 		E16D9BA02E1D48DE0068EB63 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		E1946AD63041BFDD005CBEDD /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/IOKit.framework; sourceTree = DEVELOPER_DIR; };
+		E1F04CE630527A2200EABBF1 /* StikJIT.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StikJIT.framework; path = "StikJITHeadless/StikJIT.xcframework/ios-arm64/StikJIT.framework"; sourceTree = "<group>"; };
+		F1EC0DE1305600000A000002 /* LoopbackVPN.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LoopbackVPN.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F1EC0DE2305700000B000001 /* IdevicePairing.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = IdevicePairing.dylib; path = IdevicePairing/IdevicePairing.dylib; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		074A45B92E8B3AE800263918 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				FlekStore/Helpers/apiDateFormatter.swift,
-				FlekStore/Helpers/RepoCatalogCache.swift,
-				"FlekStore/Helpers/String+ext.swift",
-				FlekStore/Models/AppRepository.swift,
-				FlekStore/Models/FSAppModel.swift,
-				FlekStore/Models/RepoResponse.swift,
+				Catalog/Helpers/RepoCatalogCache.swift,
+				"Catalog/Helpers/String+ext.swift",
+				Catalog/Models/AppRepository.swift,
+				Catalog/Models/FSAppModel.swift,
+				Catalog/Models/RepoResponse.swift,
 			);
 			target = 17DCE99C2C7067EC00731D42 /* LiveContainer */;
 		};
@@ -226,7 +253,6 @@
 			membershipExceptions = (
 				"CloudKit+GuestHooks.m",
 				DocumentPicker.m,
-				"FlekStore+GuestHooks.m",
 				"GameKit+GuestHooks.m",
 				GuestCallbackQueue.m,
 				Notification.m,
@@ -278,6 +304,8 @@
 				AppSceneViewController.m,
 				DecoratedAppSceneViewController.h,
 				DecoratedAppSceneViewController.m,
+				LCGuestCaptureNotice.h,
+				LCGuestCaptureNotice.m,
 				LCGuestVolume.h,
 				LCGuestVolume.m,
 				LCRotationLock.swift,
@@ -297,6 +325,20 @@
 			);
 			target = 17413FB42D9C0BAE00F3F928 /* LiveContainerSwiftUI */;
 		};
+		F1EC0DE030551A0000B17D01 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				StikJIT.xcframework,
+			);
+			target = E15C6F2730440EAD00FEC6BD /* StikJITHeadless */;
+		};
+		F1EC0DE1305600000A000004 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F1EC0DE1305600000A000001 /* LoopbackVPN */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -311,13 +353,6 @@
 			buildPhase = 17413FC12D9C0BAE00F3F928 /* Embed Frameworks */;
 			membershipExceptions = (
 				Frameworks/CydiaSubstrate.framework,
-			);
-		};
-		173546D42E2C82AE001B3B4C /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			buildPhase = 173545A62E2C7913001B3B4C /* Resources */;
-			membershipExceptions = (
-				"SideStore-Bridging-Header.h",
 			);
 		};
 		176614FC2E2C851800B1F478 /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */ = {
@@ -340,7 +375,7 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		076354DC2E8EC56100516854 /* build */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = build; sourceTree = "<group>"; };
 		172CA8992D9D72C300CF6989 /* Resources */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (172CA8BD2D9D74B700CF6989 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, 172CA8C32D9D76AD00CF6989 /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = Resources; sourceTree = "<group>"; };
-		173545A92E2C7913001B3B4C /* SideStoreSupport */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (173546D32E2C82AE001B3B4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, 176614FC2E2C851800B1F478 /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, 173546D42E2C82AE001B3B4C /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SideStoreSupport; sourceTree = "<group>"; };
+		173545A92E2C7913001B3B4C /* SideStoreSupport */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (173546D32E2C82AE001B3B4C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, 176614FC2E2C851800B1F478 /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = SideStoreSupport; sourceTree = "<group>"; };
 		17413FB62D9C0BAE00F3F928 /* LiveContainerSwiftUI */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (074A45B92E8B3AE800263918 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LiveContainerSwiftUI; sourceTree = "<group>"; };
 		174140162D9C0C1B00F3F928 /* TweakLoader */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (174140F52D9C1C9B00F3F928 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = TweakLoader; sourceTree = "<group>"; };
 		174140552D9C0D6D00F3F928 /* ZSign */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = ZSign; sourceTree = "<group>"; };
@@ -352,6 +387,8 @@
 		E1292AE72DCA3A660065E12D /* LiveProcess */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E1292AF72DCA3A660065E12D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LiveProcess; sourceTree = "<group>"; };
 		E1292C1A2DCA48F00065E12D /* Tweaks */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E1292C202DCA48F00065E12D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = Tweaks; sourceTree = "<group>"; };
 		E1292C242DCA4E6F0065E12D /* MultitaskSupport */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E1292C2D2DCA4E800065E12D /* PBXFileSystemSynchronizedBuildFileExceptionSet */, E1D5EDC02F48AA25004AF1E9 /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = MultitaskSupport; sourceTree = "<group>"; };
+		E15C6F2930440EAD00FEC6BD /* StikJITHeadless */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (F1EC0DE030551A0000B17D01 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = StikJITHeadless; sourceTree = "<group>"; };
+		F1EC0DE1305600000A000003 /* LoopbackVPN */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (F1EC0DE1305600000A000004 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LoopbackVPN; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -368,6 +405,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0759AEE12F29384E00301332 /* Kingfisher in Frameworks */,
+				E1946AD83041BFF8005CBEDD /* IOKit.framework in Frameworks */,
 				E16D95752E1CD2B90068EB63 /* LiveContainerShared.framework in Frameworks */,
 				174140D62D9C176F00F3F928 /* libarchive.tbd in Frameworks */,
 			);
@@ -434,6 +472,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E15C6F2530440EAD00FEC6BD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F1EC0DE1305600000A000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -463,7 +515,10 @@
 		174140B82D9C0F9100F3F928 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				E1946AD63041BFDD005CBEDD /* IOKit.framework */,
 				17554B712DA16988004C6D90 /* OpenSSL.xcframework */,
+				E1F04CE630527A2200EABBF1 /* StikJIT.framework */,
+				F1EC0DE2305700000B000001 /* IdevicePairing.dylib */,
 				174140D52D9C176700F3F928 /* libarchive.tbd */,
 				E12928C92DCA38380065E12D /* UniformTypeIdentifiers.framework */,
 			);
@@ -488,6 +543,8 @@
 				173545A92E2C7913001B3B4C /* SideStoreSupport */,
 				17CAE6182F230449008B1977 /* LaunchAppExtension */,
 				17E23DE02F443A9300C55733 /* ShareExtension */,
+				E15C6F2930440EAD00FEC6BD /* StikJITHeadless */,
+				F1EC0DE1305600000A000003 /* LoopbackVPN */,
 				174140B82D9C0F9100F3F928 /* Frameworks */,
 				17DCE99E2C7067EC00731D42 /* Products */,
 				17780D3B2E1C02420077E636 /* litehook */,
@@ -507,6 +564,8 @@
 				173545A82E2C7913001B3B4C /* SideStoreSupport.framework */,
 				17CAE6172F230449008B1977 /* LaunchAppExtension.appex */,
 				17E23DDF2F443A9300C55733 /* ShareExtension.appex */,
+				E15C6F2830440EAD00FEC6BD /* StikJITHeadless.framework */,
+				F1EC0DE1305600000A000002 /* LoopbackVPN.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -554,6 +613,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				E11884B92EF7A164009C6FA6 /* dyld_bypass_validation.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E15C6F2330440EAD00FEC6BD /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -716,6 +782,8 @@
 				173545AD2E2C7913001B3B4C /* PBXTargetDependency */,
 				17CAE61F2F230449008B1977 /* PBXTargetDependency */,
 				17E23DE82F443A9300C55733 /* PBXTargetDependency */,
+				E15C6F2D30440EAD00FEC6BD /* PBXTargetDependency */,
+				F1EC0DE1305600000A00000C /* PBXTargetDependency */,
 			);
 			name = LiveContainer;
 			productName = jump;
@@ -790,6 +858,51 @@
 			productReference = E1292BD62DCA3B660065E12D /* LiveContainerShared.framework */;
 			productType = "com.apple.product-type.framework";
 		};
+		E15C6F2730440EAD00FEC6BD /* StikJITHeadless */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E15C6F3030440EAD00FEC6BD /* Build configuration list for PBXNativeTarget "StikJITHeadless" */;
+			buildPhases = (
+				E15C6F2330440EAD00FEC6BD /* Headers */,
+				E15C6F2430440EAD00FEC6BD /* Sources */,
+				E15C6F2530440EAD00FEC6BD /* Frameworks */,
+				E15C6F2630440EAD00FEC6BD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E15C6F2930440EAD00FEC6BD /* StikJITHeadless */,
+			);
+			name = StikJITHeadless;
+			packageProductDependencies = (
+			);
+			productName = StikJITHeadless;
+			productReference = E15C6F2830440EAD00FEC6BD /* StikJITHeadless.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		F1EC0DE1305600000A000001 /* LoopbackVPN */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F1EC0DE1305600000A000008 /* Build configuration list for PBXNativeTarget "LoopbackVPN" */;
+			buildPhases = (
+				F1EC0DE1305600000A000005 /* Sources */,
+				F1EC0DE1305600000A000006 /* Frameworks */,
+				F1EC0DE1305600000A000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F1EC0DE1305600000A000003 /* LoopbackVPN */,
+			);
+			name = LoopbackVPN;
+			packageProductDependencies = (
+			);
+			productName = LoopbackVPN;
+			productReference = F1EC0DE1305600000A000002 /* LoopbackVPN.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -797,7 +910,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2610;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 1540;
 				TargetAttributes = {
 					173545A72E2C7913001B3B4C = {
@@ -832,6 +945,13 @@
 					E1292BD52DCA3B660065E12D = {
 						CreatedOnToolsVersion = 16.3;
 						LastSwiftMigration = 1630;
+					};
+					E15C6F2730440EAD00FEC6BD = {
+						CreatedOnToolsVersion = 27.0;
+						LastSwiftMigration = 2700;
+					};
+					F1EC0DE1305600000A000001 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -902,6 +1022,8 @@
 				173545A72E2C7913001B3B4C /* SideStoreSupport */,
 				17CAE6162F230449008B1977 /* LaunchAppExtension */,
 				17E23DDE2F443A9300C55733 /* ShareExtension */,
+				E15C6F2730440EAD00FEC6BD /* StikJITHeadless */,
+				F1EC0DE1305600000A000001 /* LoopbackVPN */,
 			);
 		};
 /* End PBXProject section */
@@ -950,6 +1072,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E1292BD42DCA3B660065E12D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E15C6F2630440EAD00FEC6BD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F1EC0DE1305600000A000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1057,6 +1193,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E15C6F2430440EAD00FEC6BD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F1EC0DE1305600000A000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -1104,6 +1254,16 @@
 			isa = PBXTargetDependency;
 			target = E1292BD52DCA3B660065E12D /* LiveContainerShared */;
 			targetProxy = E1292BE92DCA3B670065E12D /* PBXContainerItemProxy */;
+		};
+		E15C6F2D30440EAD00FEC6BD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E15C6F2730440EAD00FEC6BD /* StikJITHeadless */;
+			targetProxy = E15C6F2C30440EAD00FEC6BD /* PBXContainerItemProxy */;
+		};
+		F1EC0DE1305600000A00000C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F1EC0DE1305600000A000001 /* LoopbackVPN */;
+			targetProxy = F1EC0DE1305600000A00000B /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1636,7 +1796,7 @@
 				CODE_SIGN_ENTITLEMENTS = entitlements.xml;
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3.8.7;
 				DEVELOPMENT_TEAM = 2V7F92VA47;
 				ENABLE_DEBUG_DYLIB = YES;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -1657,7 +1817,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.3.55;
+				MARKETING_VERSION = 3.8.7;
 				NEW_SETTING = "";
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.fs.flekdeck;
@@ -1683,7 +1843,7 @@
 				CODE_SIGN_ENTITLEMENTS = entitlements.xml;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3.8.7;
 				DEVELOPMENT_TEAM = 2V7F92VA47;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1703,7 +1863,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.3.55;
+				MARKETING_VERSION = 3.8.7;
 				NEW_SETTING = "";
 				OTHER_LDFLAGS = (
 					"-e",
@@ -1727,7 +1887,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3.7.11;
+				CURRENT_PROJECT_VERSION = 3.8.7;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				DEVELOPMENT_TEAM = 2V7F92VA47;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1741,7 +1901,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.7.11;
+				MARKETING_VERSION = 3.8.7;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.fs.flekdeck.ShareExtension;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.fs.flekdeck.ShareExtension;
@@ -1767,7 +1927,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3.7.11;
+				CURRENT_PROJECT_VERSION = 3.8.7;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				DEVELOPMENT_TEAM = 2V7F92VA47;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1781,7 +1941,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.7.11;
+				MARKETING_VERSION = 3.8.7;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.fs.flekdeck.ShareExtension;
 				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.fs.flekdeck.ShareExtension;
@@ -2024,6 +2184,170 @@
 			};
 			name = Release;
 		};
+		E15C6F3130440EAD00FEC6BD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "$(inherited)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = SimulatorStub.c;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = "*";
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/StikJITHeadless/StikJIT.xcframework/ios-arm64";
+				GENERATE_INFOPLIST_FILE = YES;
+				"INCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = SimulatorStub.c;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.StikJITHeadless;
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INSTALL_MODULE = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Debug;
+		};
+		E15C6F3230440EAD00FEC6BD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "$(inherited)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = SimulatorStub.c;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = "*";
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/StikJITHeadless/StikJIT.xcframework/ios-arm64";
+				GENERATE_INFOPLIST_FILE = YES;
+				"INCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = SimulatorStub.c;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.StikJITHeadless;
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INSTALL_MODULE = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
+		};
+		F1EC0DE1305600000A000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 17B0F8452DE16FE4008110EA /* xcconfigs */;
+			baseConfigurationReferenceRelativePath = LoopbackVPN.xcconfig;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = LoopbackVPN/LoopbackVPN.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3.8.7;
+				DEVELOPMENT_TEAM = 2V7F92VA47;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LoopbackVPN/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.8.7;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fs.flekdeck.LoopbackVPN;
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.fs.flekdeck.LoopbackVPN;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F1EC0DE1305600000A00000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 17B0F8452DE16FE4008110EA /* xcconfigs */;
+			baseConfigurationReferenceRelativePath = LoopbackVPN.xcconfig;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = LoopbackVPN/LoopbackVPN.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3.8.7;
+				DEVELOPMENT_TEAM = 2V7F92VA47;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LoopbackVPN/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 3.8.7;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fs.flekdeck.LoopbackVPN;
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.fs.flekdeck.LoopbackVPN;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -2122,6 +2446,24 @@
 			buildConfigurations = (
 				E1292BED2DCA3B670065E12D /* Debug */,
 				E1292BEE2DCA3B670065E12D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E15C6F3030440EAD00FEC6BD /* Build configuration list for PBXNativeTarget "StikJITHeadless" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E15C6F3130440EAD00FEC6BD /* Debug */,
+				E15C6F3230440EAD00FEC6BD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F1EC0DE1305600000A000008 /* Build configuration list for PBXNativeTarget "LoopbackVPN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F1EC0DE1305600000A000009 /* Debug */,
+				F1EC0DE1305600000A00000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

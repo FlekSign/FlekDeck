@@ -127,6 +127,17 @@ int checkCert(NSData *key,
         return -6;
     }
 
+    // Named in every error below, so a failed check says where it went.
+    NSString *address = [NSString stringWithUTF8String:(const char *)uri->data] ?: @"";
+    NSURL *url = [NSURL URLWithString:address];
+    if (!url) {
+        completionHandler(2, nil, nil, [NSString stringWithFormat:@"The certificate's OCSP address is not a valid URL: %@", address]);
+        sk_ACCESS_DESCRIPTION_pop_free(aia, ACCESS_DESCRIPTION_free);
+        X509_free(issuer);
+        BIO_free(brother1);
+        return -7;
+    }
+
     OCSP_REQUEST* req = OCSP_REQUEST_new();
     OCSP_CERTID* cert_id = OCSP_cert_to_id(nullptr, (X509*)cert, issuer);
     OCSP_request_add0_id(req, cert_id);  // Ownership transferred to request
@@ -134,7 +145,7 @@ int checkCert(NSData *key,
     unsigned char* der = 0;
     int len = i2d_OCSP_REQUEST(req, &der);
 
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithUTF8String:(const char *)uri->data]]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     [request setHTTPMethod:@"POST"];
     [request setHTTPBody:[NSData dataWithBytes:der length:len]];
     [request setValue:@"application/ocsp-request" forHTTPHeaderField:@"Content-Type"];
@@ -154,7 +165,9 @@ int checkCert(NSData *key,
                                                                 NSURLResponse * _Nullable response,
                                                                 NSError * _Nullable error) {
         if (error) {
-            completionHandler(2, nil, nil, error.localizedDescription);
+            // Where it failed, which a redirect can make another address.
+            NSString *failedAt = error.userInfo[NSURLErrorFailingURLStringErrorKey] ?: address;
+            completionHandler(2, nil, nil, [NSString stringWithFormat:@"%@ (%ld)\n%@", error.localizedDescription, (long)error.code, failedAt]);
             return;
         }
 
@@ -165,7 +178,7 @@ int checkCert(NSData *key,
             OCSP_RESPONSE *resp = 0;
             d2i_OCSP_RESPONSE(&resp, (const unsigned char**)&respBytes, data.length);
             if(!resp) {
-                completionHandler(2, nil, nil, @"Failed to decode OCSP response.");
+                completionHandler(2, nil, nil, [NSString stringWithFormat:@"Failed to decode OCSP response.\n%@", httpResponse.URL.absoluteString ?: address]);
                 return;
             }
             OCSP_BASICRESP *basic = OCSP_response_get1_basic(resp);
@@ -200,7 +213,7 @@ int checkCert(NSData *key,
             
             
         } else {
-            completionHandler(2, nil, nil, @"Invalid response or no data");
+            completionHandler(2, nil, nil, [NSString stringWithFormat:@"Invalid response or no data (HTTP %ld)\n%@", (long)httpResponse.statusCode, httpResponse.URL.absoluteString ?: address]);
             return;
         }
     }];
@@ -362,6 +375,35 @@ int checkCert(NSData *key,
     }
     NSString* teamId = [NSString stringWithUTF8String:zSignAsset.m_strTeamId.c_str()];
     return teamId;
+}
+
++ (NSDictionary<NSString*, id>*)getCertInfoWithCert:(NSData *)cert pass:(NSString *)pass {
+    string strPassword = [pass cStringUsingEncoding:NSUTF8StringEncoding];
+
+    ZLog::logs.clear();
+
+    ZSignAsset zSignAsset;
+    if (!zSignAsset.InitSimple([cert bytes], (int)[cert length], nil, 0, strPassword)) {
+        ZLog::logs.clear();
+        return nil;
+    }
+
+    NSMutableDictionary<NSString*, id>* info = [NSMutableDictionary new];
+    info[@"commonName"] = [NSString stringWithUTF8String:zSignAsset.m_strSubjectCN.c_str()];
+    info[@"teamId"] = [NSString stringWithUTF8String:zSignAsset.m_strTeamId.c_str()];
+
+    // Read from the certificate itself, so an expired one is caught offline
+    // too — checkCert only reports the date once Apple's OCSP server answers.
+    const ASN1_TIME* notAfter = X509_get0_notAfter((X509*)zSignAsset.m_x509Cert);
+    struct tm expiry = {};
+    if (notAfter && ASN1_TIME_to_tm(notAfter, &expiry) == 1) {
+        info[@"notAfter"] = [NSDate dateWithTimeIntervalSince1970:timegm(&expiry)];
+    }
+
+    // ZSignAsset has no destructor to release what InitSimple parsed.
+    X509_free((X509*)zSignAsset.m_x509Cert);
+    EVP_PKEY_free((EVP_PKEY*)zSignAsset.m_evpPKey);
+    return info;
 }
 
 + (int)checkCert:(NSData *)cert pass:(NSString *)pass completionHandler:(void(^)(int status, NSDate* expirationDate, NSString* organizationalUnitName, NSString *error))completionHandler {

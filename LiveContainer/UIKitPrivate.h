@@ -78,6 +78,10 @@
 - (void)setAutorotates:(BOOL)autorotates forceUpdateInterfaceOrientation:(BOOL)force;
 @end
 
+@interface UIScreen (private)
+- (CGFloat)_displayCornerRadius;
+@end
+
 @interface _LSOpenConfiguration : NSObject
 @property(nonatomic, copy) NSDictionary *frontBoardOptions;
 @end

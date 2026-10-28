@@ -83,8 +83,8 @@
 		<string>_device-info._tcp</string>
 		<string>_sleep-proxy._udp</string>
 		<string>_dns-sd._udp</string>
-        <string>_remotepairing-pairable-host._tcp</string>
-        <string>_stikpairprobe._tcp</string>
+		<string>_remotepairing-pairable-host._tcp</string>
+		<string>_stikpairprobe._tcp</string>
 	</array>
 	<key>NSExtension</key>
 	<dict>

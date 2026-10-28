@@ -25,6 +25,10 @@ struct FlekHomeListView<Menu: View>: View {
     var showsSingleBadge: (LCAppModel) -> Bool = { _ in false }
     @ViewBuilder var contextMenu: (FlekHomeItem) -> Menu
 
+    /// Observed for the built-in apps' badges, so the Settings count comes and
+    /// goes with the certificate as it does on the grid.
+    @EnvironmentObject private var sharedModel: SharedModel
+
     @State private var draggedItem: FlekHomeItem?
     /// Whether the drag layer is mounted. Set true a beat after entering edit
     /// mode (so the enter animation plays uncovered) and cleared a beat after
@@ -114,6 +118,8 @@ struct FlekHomeListView<Menu: View>: View {
             isNew: newDot(for: item),
             isShared: sharedMark(for: item),
             showsSingleBadge: singleBadge(for: item),
+            showsJITBadge: jitBadge(for: item),
+            notificationCount: notificationCount(for: item),
             isEditing: isEditing,
             editBadge: item.editBadge,
             onDelete: { onDelete(item) },
@@ -173,6 +179,8 @@ struct FlekHomeListView<Menu: View>: View {
             isNew: newDot(for: item),
             isShared: sharedMark(for: item),
             showsSingleBadge: singleBadge(for: item),
+            showsJITBadge: jitBadge(for: item),
+            notificationCount: notificationCount(for: item),
             isEditing: true,
             editBadge: item.editBadge,
             onDelete: { onDelete(item) },
@@ -199,6 +207,16 @@ struct FlekHomeListView<Menu: View>: View {
     private func singleBadge(for item: FlekHomeItem) -> Bool {
         if case .installed(let app) = item { return showsSingleBadge(app) }
         return false
+    }
+
+    private func jitBadge(for item: FlekHomeItem) -> Bool {
+        if case .installed(let app) = item { return app.uiIsJITNeeded }
+        return false
+    }
+
+    private func notificationCount(for item: FlekHomeItem) -> Int {
+        if case .defaultApp(let kind) = item { return kind.badgeCount(in: sharedModel) }
+        return 0
     }
 
     @ViewBuilder
@@ -248,6 +266,10 @@ struct FlekAppRow<Icon: View>: View {
     var isNew: Bool = false
     var isShared: Bool = false
     var showsSingleBadge: Bool = false
+    /// The app is set to launch with JIT.
+    var showsJITBadge: Bool = false
+    /// The red count on the icon's corner; 0 draws none.
+    var notificationCount: Int = 0
     var isEditing: Bool = false
     var editBadge: FlekEditBadge = .remove
     var onDelete: () -> Void
@@ -269,6 +291,15 @@ struct FlekAppRow<Icon: View>: View {
             icon()
                 .frame(width: 68, height: 68)
                 .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                // Hung off the icon's top-right corner, as on the grid. Laid
+                // over the clipped icon rather than inside it, so the part
+                // reaching past the corner still shows.
+                .overlay(alignment: .topTrailing) {
+                    if notificationCount > 0 {
+                        FlekNotificationBadge(count: notificationCount)
+                            .offset(x: 8, y: -8)
+                    }
+                }
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -303,13 +334,20 @@ struct FlekAppRow<Icon: View>: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .transition(.opacity)
-            } else if showsSingleBadge {
-                // Same indicator as the grid cell (app launches in single mode),
-                // sitting where the Run pill used to.
-                Image(systemName: "app.dashed")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .transition(.opacity)
+            } else if showsSingleBadge || showsJITBadge {
+                // Same indicators as the grid cell (app launches with JIT, in
+                // single mode), sitting where the Run pill used to.
+                HStack(spacing: 6) {
+                    if showsJITBadge {
+                        Image(systemName: FlekSymbol.jit)
+                    }
+                    if showsSingleBadge {
+                        Image(systemName: "app.dashed")
+                    }
+                }
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(.secondary)
+                .transition(.opacity)
             }
         }
         .padding(.leading, 8)
@@ -322,6 +360,23 @@ struct FlekAppRow<Icon: View>: View {
             // opting into that yet.
             FlekGlassBackground(cornerRadius: 20, tint: FlekHomeListRow.surfaceTint)
         }
+    }
+}
+
+/// The red count iOS draws on an app icon's corner, for the list's icons. The
+/// grid draws the same badge in UIKit, in `LCSpringboardIconCell`.
+struct FlekNotificationBadge: View {
+    let count: Int
+    var height: CGFloat = 24
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: (height * 16 / 24).rounded()))
+            .foregroundStyle(.white)
+            // A circle for one digit, a capsule once the figure is wider.
+            .padding(.horizontal, height / 4)
+            .frame(minWidth: height, minHeight: height)
+            .background(Capsule().fill(Color.red))
     }
 }
 
