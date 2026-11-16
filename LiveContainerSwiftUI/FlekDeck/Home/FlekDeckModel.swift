@@ -13,16 +13,36 @@ enum FlekDeckKeys {
     static let wallpaperName = "FlekWallpaperName"   // bundled wallpaper asset name
     static let wallpaperPhoto = "FlekWallpaperPhoto" // file name of a user-picked photo wallpaper
     static let homeLayout = "FlekHomeLayout"         // "grid" | "list"
+    static let homeBarPosition = "FlekHomeBarPosition" // "bottom" | "side" — iPhone Duo only
     static let launchedApps = "FlekLaunchedApps"     // bundle paths that have been opened at least once
     static let homeScreenOrder = "FlekHomeScreenOrder" // ordered IDs of all home screen items (default apps + installed)
     static let homeScreenPageSizes = "FlekHomeScreenPageSizes" // per-page item counts for custom page layouts
     static let cardStyleGlass = "FlekCardStyleGlass" // true = liquid glass, false = thin material
+    static let glassStyle = "FlekGlassStyle"         // "liquid" | "frosted"
+    static let splitLightShown = "FlekSplitLightShown" // iPad: the Split View dot in the home screen's running-apps pill
 }
 
 /// Home screen layout chosen on the Personalization page.
 enum FlekHomeLayout: String {
     case grid
     case list
+}
+
+/// Where the home screen keeps its search button and running apps, chosen on the
+/// Personalization page. Offered only on the iPhone Duo, whose status bar runs down
+/// one side of the display: `side` stands them in that same column, below it, and
+/// gives the room they took at the bottom back to the grid.
+enum FlekHomeBarPosition: String {
+    case bottom
+    case side
+}
+
+/// How FlekDeck draws its own glass, chosen on the Personalization page: Liquid
+/// Glass, or frosted — the simpler blur the same surfaces have before iOS 26.
+/// Offered from iOS 26 on; before it, everything is frosted either way.
+enum FlekGlassStyle: String {
+    case liquid
+    case frosted
 }
 
 /// The built-in "apps" pinned at the start of the home screen.
@@ -95,8 +115,8 @@ enum FlekHomeItem: Identifiable, DragulaItem {
 
     /// What a tile draws, beyond which tile it is. Two items with the same
     /// `id` but different signatures are one tile showing something new — an
-    /// app converted to shared or renamed, set to launch with JIT, a badge on
-    /// Settings coming or going
+    /// app converted to shared or renamed, set to launch with JIT, paired for
+    /// Split View, a badge on Settings coming or going
     /// — which the springboard has to be told about: its cells are configured
     /// once and then left alone, so a change that adds and removes nothing
     /// never reaches them otherwise. Install progress is deliberately absent;
@@ -104,9 +124,9 @@ enum FlekHomeItem: Identifiable, DragulaItem {
     var displaySignature: String {
         switch self {
         case .installed(let app):
-            return "\(id)|\(app.uiIsShared ? "s" : "p")|\(app.uiIsJITNeeded ? "j" : "")|\(app.appInfo.displayName() ?? "")"
+            return "\(id)|\(app.uiIsShared ? "s" : "p")|\(app.uiIsJITNeeded ? "j" : "")|\(splitPartnerID ?? "")|\(app.appInfo.displayName() ?? "")"
         case .defaultApp(let kind):
-            return "\(id)|\(kind.badgeCount(in: DataManager.shared.model))"
+            return "\(id)|\(kind.badgeCount(in: DataManager.shared.model))|\(splitPartnerID ?? "")"
         default:
             return id
         }
@@ -124,6 +144,15 @@ enum FlekHomeItem: Identifiable, DragulaItem {
     var isPlaceholder: Bool {
         if case .placeholder = self { return true }
         return false
+    }
+
+    /// The item this one is paired with, to open beside it in Split View (see
+    /// `FlekSplitPairStore`): its icon shows a link and that item's icon.
+    var splitPartnerID: String? {
+        switch self {
+        case .defaultApp, .installed: return FlekSplitPairStore.shared.partner(of: id)
+        default: return nil
+        }
     }
 
     /// What edit mode puts in the corner of this item.
@@ -244,5 +273,56 @@ final class FlekLaunchTracker {
     func forget(_ app: LCAppModel) {
         guard let key = app.appInfo.relativeBundlePath, cache.remove(key) != nil else { return }
         persist()
+    }
+}
+
+/// Pairs of home screen items that open together side by side, on an iPad or
+/// an iPhone Duo opened out: opening either opens both, each on its own side.
+/// Paired and unpaired from the Split View divider's menu, and from an icon's
+/// menu. Each pair is its two items' ids, left then right, and an item is in
+/// one pair at a time.
+final class FlekSplitPairStore {
+    static let shared = FlekSplitPairStore()
+    /// Posted when a pair is made or broken, for the home screen to mark its
+    /// icons again.
+    static let didChange = Notification.Name("FlekSplitPairsDidChange")
+    private let store = LCUtils.appGroupUserDefault
+    private let key = "FlekSplitPairs"
+
+    /// Read for every home screen icon on every pass, so kept in memory, as
+    /// the launch modes are.
+    private lazy var cache: [[String]] = (store.array(forKey: key) as? [[String]]) ?? []
+
+    var pairs: [[String]] {
+        get { cache }
+        set {
+            guard newValue != cache else { return }
+            cache = newValue
+            store.set(newValue, forKey: key)
+            NotificationCenter.default.post(name: Self.didChange, object: nil)
+        }
+    }
+
+    /// The item `itemID` is paired with, if it is.
+    func partner(of itemID: String) -> String? {
+        for pair in cache where pair.count == 2 {
+            if pair[0] == itemID { return pair[1] }
+            if pair[1] == itemID { return pair[0] }
+        }
+        return nil
+    }
+
+    /// `left` and `right` paired, to open side by side that way round. Each
+    /// leaves any pair it was in: an item is in one at a time.
+    func pair(_ left: String, _ right: String) {
+        var next = pairs.filter { !$0.contains(left) && !$0.contains(right) }
+        next.append([left, right])
+        pairs = next
+    }
+
+    /// `itemID` out of the pair it is in, if any: unpaired from its icon's
+    /// menu, or its app uninstalled.
+    func forget(_ itemID: String) {
+        pairs = pairs.filter { !$0.contains(itemID) }
     }
 }

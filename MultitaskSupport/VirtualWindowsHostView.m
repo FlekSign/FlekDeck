@@ -14,13 +14,25 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
     /// The size the windows were last laid out against, so a layout pass that
     /// changes nothing costs nothing.
     CGRect _lastLaidOutBounds;
+    /// Set while the backdrop itself is being moved, so the reordering methods
+    /// below do not set about moving it again.
+    BOOL _placingBackdrop;
+    /// A window on its way out of the host, which the backdrop is placed as if it
+    /// had already left.
+    __weak UIView *_leavingWindow;
 }
-/// Opaque black filler shown behind the app windows. Guest windows don't always
-/// cover the screen — a landscape-only app on a portrait device is laid out as a
-/// scaled landscape strip, and even a maximized one leaves slivers outside its
-/// rounded corners. Without this, what shows in those gaps is the launcher behind
-/// the host view, which is white in light mode. Hidden whenever no app window is
+/// Opaque black filler, laid directly under the window in front. Guest windows
+/// don't always cover the screen — a landscape-only app on a portrait device is
+/// laid out as a scaled landscape strip, and even a maximized one leaves
+/// slivers outside its rounded corners. Without this, what shows in those gaps
+/// is whatever is behind the window: the launcher behind the host view, which is
+/// white in light mode, or another window. Hidden whenever no app window is
 /// visible, so the springboard and its wallpaper are untouched on the home state.
+///
+/// Under the window in front rather than under them all. Switching apps leaves
+/// the one switched from visible behind the new one, and from the back the
+/// backdrop covered the launcher only, so that window showed through every gap
+/// of the one in front: the app or FlekDeck page before it.
 @property(nonatomic) UIView *backdropView;
 @end
 
@@ -34,9 +46,12 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
     _backdropView = [[UIView alloc] initWithFrame:self.bounds];
     _backdropView.backgroundColor = UIColor.blackColor;
     _backdropView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // Never a hit-test candidate, so hitTest: below still reports "nothing here"
-    // and lets taps fall through to the springboard when no window is up.
-    _backdropView.userInteractionEnabled = NO;
+    // Takes the touches that land on it. It only shows with a window up, and a
+    // finger in one of that window's gaps otherwise reached whatever lay unseen
+    // underneath: the window behind, or the springboard's icons. Hidden, it is no
+    // hit-test candidate, so with no window up hitTest: below still reports
+    // "nothing here" and taps fall through to the springboard.
+    _backdropView.userInteractionEnabled = YES;
     _backdropView.hidden = YES;
     [self addSubview:_backdropView];
 
@@ -61,7 +76,6 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
     if(subview == _backdropView) return;
     [subview addObserver:self forKeyPath:@"hidden" options:0 context:kBackdropObservationContext];
     [subview addObserver:self forKeyPath:@"alpha" options:0 context:kBackdropObservationContext];
-    [self sendSubviewToBack:_backdropView];
     [self updateBackdropVisibility];
 }
 
@@ -70,6 +84,12 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
     if(subview == _backdropView) return;
     [subview removeObserver:self forKeyPath:@"hidden" context:kBackdropObservationContext];
     [subview removeObserver:self forKeyPath:@"alpha" context:kBackdropObservationContext];
+    // Straight away, as if it had gone already. The backdrop lies directly under
+    // the window in front, and with that window gone it would be lying over the
+    // rest, blacking them out until the check below.
+    _leavingWindow = subview;
+    [self updateBackdropVisibility];
+    _leavingWindow = nil;
     // The subview is still in self.subviews at this point; re-check once it's gone.
     dispatch_async(dispatch_get_main_queue(), ^{
         [self updateBackdropVisibility];
@@ -82,6 +102,18 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
         return;
     }
     [self updateBackdropVisibility];
+    // A window put away or brought back may be one of two side by side.
+    [MultitaskDockManager.shared windowVisibilityDidChange];
+}
+
+- (void)setSplitWindows:(NSArray<UIView *> *)splitWindows {
+    _splitWindows = [splitWindows copy];
+    [self updateBackdropVisibility];
+}
+
+- (void)setLiftChromeViews:(NSArray<UIView *> *)liftChromeViews {
+    _liftChromeViews = [liftChromeViews copy];
+    [self updateBackdropVisibility];
 }
 
 - (void)setBackdropSuspended:(BOOL)backdropSuspended {
@@ -89,22 +121,113 @@ static void *kBackdropObservationContext = &kBackdropObservationContext;
     [self updateBackdropVisibility];
 }
 
+- (void)setBackdropHeldForQuickSwitch:(BOOL)backdropHeldForQuickSwitch {
+    _backdropHeldForQuickSwitch = backdropHeldForQuickSwitch;
+    [self updateBackdropVisibility];
+}
+
 - (void)updateBackdropVisibility {
-    if(self.backdropSuspended) {
-        // A window is on its way into or out of an icon; what is behind it should
-        // be the home screen it is travelling across, not a black field.
+    if(self.backdropSuspended || self.backdropHeldForQuickSwitch) {
+        // A window is on its way into or out of an icon, or being swiped aside;
+        // what is behind it should be the home screen, not a black field.
         _backdropView.hidden = YES;
         return;
     }
-    BOOL anyWindowVisible = NO;
-    for(UIView *subview in self.subviews) {
-        if(subview == _backdropView) continue;
+    UIView *frontmostWindow = nil;
+    for(UIView *subview in self.subviews.reverseObjectEnumerator) {
+        if(subview == _backdropView || subview == _leavingWindow) continue;
+        if([_liftChromeViews indexOfObjectIdenticalTo:subview] != NSNotFound) continue;
         if(!subview.hidden && subview.alpha > 0.1) {
-            anyWindowVisible = YES;
+            frontmostWindow = subview;
             break;
         }
     }
-    _backdropView.hidden = !anyWindowVisible;
+    // Two side by side are both in front: under whichever of them is lower.
+    UIView *anchor = frontmostWindow;
+    if(frontmostWindow && [_splitWindows containsObject:frontmostWindow]) {
+        NSUInteger lowest = [self.subviews indexOfObjectIdenticalTo:frontmostWindow];
+        for(UIView *window in _splitWindows) {
+            if(window.hidden || window.superview != self) continue;
+            NSUInteger index = [self.subviews indexOfObjectIdenticalTo:window];
+            if(index < lowest) {
+                lowest = index;
+                anchor = window;
+            }
+        }
+    }
+    // Drop zones laid under the window being lifted: under them too, or the
+    // backdrop, directly under that window, would black them out.
+    if(anchor) {
+        NSUInteger lowest = [self.subviews indexOfObjectIdenticalTo:anchor];
+        for(UIView *chrome in _liftChromeViews) {
+            if(chrome.superview != self) continue;
+            NSUInteger index = [self.subviews indexOfObjectIdenticalTo:chrome];
+            if(index < lowest) {
+                lowest = index;
+                anchor = chrome;
+            }
+        }
+    }
+    if(anchor) [self placeBackdropUnder:anchor];
+    _backdropView.hidden = !frontmostWindow;
+}
+
+/// Puts the backdrop directly under `window`, the window in front, so it covers
+/// every window behind as well as the launcher. Windows here are all maximized,
+/// so what it hides of the ones behind is only what showed through the gaps.
+- (void)placeBackdropUnder:(UIView *)window {
+    NSArray<UIView *> *subviews = self.subviews;
+    NSUInteger index = [subviews indexOfObjectIdenticalTo:window];
+    if(index == NSNotFound || (index > 0 && subviews[index - 1] == _backdropView)) return;
+    _placingBackdrop = YES;
+    [super insertSubview:_backdropView belowSubview:window];
+    _placingBackdrop = NO;
+}
+
+#pragma mark Window order
+
+// A window brought forward, or sent back, changes which one is in front and so
+// where the backdrop belongs. Nothing about the order can be observed the way
+// `hidden` and `alpha` are, so every way of changing it puts the backdrop back
+// under the window now in front.
+- (void)addSubview:(UIView *)view {
+    [super addSubview:view];
+    [self windowOrderDidChange];
+}
+
+- (void)bringSubviewToFront:(UIView *)view {
+    [super bringSubviewToFront:view];
+    [self windowOrderDidChange];
+}
+
+- (void)sendSubviewToBack:(UIView *)view {
+    [super sendSubviewToBack:view];
+    [self windowOrderDidChange];
+}
+
+- (void)insertSubview:(UIView *)view atIndex:(NSInteger)index {
+    [super insertSubview:view atIndex:index];
+    [self windowOrderDidChange];
+}
+
+- (void)insertSubview:(UIView *)view belowSubview:(UIView *)siblingSubview {
+    [super insertSubview:view belowSubview:siblingSubview];
+    [self windowOrderDidChange];
+}
+
+- (void)insertSubview:(UIView *)view aboveSubview:(UIView *)siblingSubview {
+    [super insertSubview:view aboveSubview:siblingSubview];
+    [self windowOrderDidChange];
+}
+
+- (void)exchangeSubviewAtIndex:(NSInteger)index1 withSubviewAtIndex:(NSInteger)index2 {
+    [super exchangeSubviewAtIndex:index1 withSubviewAtIndex:index2];
+    [self windowOrderDidChange];
+}
+
+- (void)windowOrderDidChange {
+    if(_placingBackdrop || !_backdropView) return;
+    [self updateBackdropVisibility];
 }
 
 #pragma mark Layout
@@ -139,6 +262,9 @@ static BOOL LCRotationIsLocked(void) {
     BOOL locked = LCRotationIsLocked();
     if(!locked && CGRectEqualToRect(self.bounds, _lastLaidOutBounds)) return;
     if(!locked) _lastLaidOutBounds = self.bounds;
+    // First, so that two apps side by side are known to still be side by side —
+    // or not, folded onto the cover display — when each guest is re-framed below.
+    if(!locked) [MultitaskDockManager.shared windowHostDidResize];
     for(UIView *subview in self.subviews) {
         if(subview == _backdropView) continue;
         DecoratedAppSceneViewController *decoratedVC = (id)subview._viewDelegate;
@@ -178,6 +304,16 @@ static BOOL LCRotationIsLocked(void) {
         return nil;
     } else {
         self.shouldForwardTapAction = YES;
+        // A finger on an app is that app in use, which ends a run of swipes along
+        // the bar: the next swipe starts from the apps' order as it then is. One
+        // in a gap beside it, on the backdrop, is not.
+        if(hitView && hitView != _backdropView && event.type == UIEventTypeTouches) {
+            [MultitaskDockManager.shared quickSwitchWindowTouched];
+            // And of two apps side by side, the one touched is the one in use.
+            UIView *window = hitView;
+            while(window.superview && window.superview != self) window = window.superview;
+            if(window.superview == self) [MultitaskDockManager.shared windowTouched:window];
+        }
         return hitView;
     }
 }

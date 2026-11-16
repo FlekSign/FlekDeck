@@ -37,6 +37,8 @@ final class LCSpringboardViewController: UIViewController {
     private(set) var isInEditMode: Bool = false
 
     var darkModeIcon: Bool = false
+    /// Whether the icons' cards are Liquid Glass, or frosted: see `FlekGlassStyle`.
+    var drawsGlass = true
     
 
     // MARK: - Callbacks (set by Representable)
@@ -54,6 +56,8 @@ final class LCSpringboardViewController: UIViewController {
 
     private(set) var dragManager: LCSpringboardDragManager!
     private var longPressGesture: UILongPressGestureRecognizer!
+    /// Ends edit mode on a tap anywhere off an icon, as SpringBoard does.
+    private var endEditingTapGesture: UITapGestureRecognizer!
 
     private var currentPage: Int = 0
 
@@ -76,6 +80,14 @@ final class LCSpringboardViewController: UIViewController {
         setupOuterCollectionView()
         setupPageControl()
         setupDragManager()
+        // A pair made or broken, in Split View or from an icon's menu: its two
+        // icons gain or lose the link and partner icon under their names.
+        NotificationCenter.default.addObserver(self, selector: #selector(splitPairsChanged),
+                                               name: FlekSplitPairStore.didChange, object: nil)
+    }
+
+    @objc private func splitPairsChanged() {
+        refreshVisibleItems()
     }
 
     deinit {
@@ -205,6 +217,11 @@ final class LCSpringboardViewController: UIViewController {
         longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPressGesture.minimumPressDuration = 0.3
         view.addGestureRecognizer(longPressGesture)
+
+        endEditingTapGesture = UITapGestureRecognizer(target: self, action: #selector(handleEndEditingTap(_:)))
+        endEditingTapGesture.cancelsTouchesInView = false
+        endEditingTapGesture.delegate = self
+        view.addGestureRecognizer(endEditingTapGesture)
     }
 
     // MARK: - Data update
@@ -677,6 +694,36 @@ final class LCSpringboardViewController: UIViewController {
     @objc private func pageControlTapped(_ sender: UIPageControl) {
         scrollToPage(sender.currentPage)
     }
+
+    @objc private func handleEndEditingTap(_ gesture: UITapGestureRecognizer) {
+        guard isInEditMode, !dragManager.isDragging else { return }
+        setEditing(false)
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate (tap off an icon ends editing)
+
+extension LCSpringboardViewController: UIGestureRecognizerDelegate {
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === endEditingTapGesture else { return true }
+        guard isInEditMode, !dragManager.isDragging else { return false }
+
+        // Icons, their delete buttons and the page dots keep their own taps;
+        // only empty slots and the space around the grid end editing.
+        var hit = touch.view
+        while let view = hit, view !== self.view {
+            if view is UIControl { return false }
+            if let cell = view as? LCSpringboardIconCell { return cell.isPlaceholderCell }
+            hit = view.superview
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === endEditingTapGesture
+    }
 }
 
 // MARK: - UICollectionViewDataSource
@@ -692,6 +739,7 @@ extension LCSpringboardViewController: UICollectionViewDataSource {
         cell.items = pages[indexPath.item]
         cell.delegate = self
         cell.darkModeIcon = darkModeIcon
+        cell.drawsGlass = drawsGlass
         cell.draggedItemId = dragManager.currentOperation?.itemId
         cell.collectionView.reloadData()
 

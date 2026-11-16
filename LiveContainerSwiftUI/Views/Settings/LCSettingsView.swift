@@ -74,7 +74,7 @@ struct LCSettingsView: View {
     @AppStorage("LCMaxOneAppOnStage", store: LCUtils.appGroupUserDefault) var onlyOneAppOnStage = false
     @AppStorage("LCRedirectURLToHost", store: LCUtils.appGroupUserDefault) var redirectURLToHost = false
     @AppStorage("LCShowRotationPanel", store: LCUtils.appGroupUserDefault) var showRotationPanel = false
-    @AppStorage("LCMultitaskHomeBar", store: LCUtils.appGroupUserDefault) var usesBottomSwipe = true
+    @AppStorage("LCMultitaskHomeBar", store: LCUtils.appGroupUserDefault) var usesBottomSwipe = FlekDeviceModel.usesBottomSwipeByDefault
     
     @AppStorage("LCSideJITServerAddress", store: LCUtils.appGroupUserDefault) var sideJITServerAddress : String = ""
     @AppStorage("LCDeviceUDID", store: LCUtils.appGroupUserDefault) var deviceUDID: String = ""
@@ -484,6 +484,9 @@ struct LCSettingsView: View {
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        // A column, not the whole width, on an iPad and an iPhone Duo opened
+        // out: every page pushed here is laid out for a phone.
+        .modifier(FlekReadableColumn())
         .onChange(of: sharedModel.deepLink) { link in
             guard sharedModel.selectedTab == .settings, let link else { return }
             sharedModel.deepLink = nil

@@ -18,5 +18,19 @@ API_AVAILABLE(ios(16.0))
 /// arrives in one frame, because a window's opacity reaches its final value the
 /// moment its animation is committed rather than when it looks that way.
 @property(nonatomic) BOOL backdropSuspended;
+/// Holds the backdrop back while a swipe along the bar moves the window in front
+/// aside. What that uncovers is the springboard, which the dock lays blurred
+/// under this view for the length of the swipe, and the black would cover it.
+/// Kept apart from `backdropSuspended`, which flights set and clear on their own
+/// schedule, so neither lets the backdrop back while the other still holds it.
+@property(nonatomic) BOOL backdropHeldForQuickSwitch;
+/// The two windows standing side by side on an iPhone Duo opened out, or nil.
+/// Both are in front, so the backdrop goes under the lower of the two rather
+/// than directly under the one on top, where it would black out the other.
+@property(nonatomic, copy) NSArray<UIView *> *splitWindows;
+/// Drop zones laid among the windows while one is being lifted, just under it,
+/// so the window being carried stays in front of them. Not windows: never taken
+/// for the window in front, and the backdrop goes under them rather than over.
+@property(nonatomic, copy) NSArray<UIView *> *liftChromeViews;
 - (BOOL)handleStatusBarTapAction:(UIAction *)action;
 @end

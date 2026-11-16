@@ -24,6 +24,13 @@ final class LCSpringboardPageCell: UICollectionViewCell {
     var items: [FlekHomeItem] = []
     var draggedItemId: String?
     var darkModeIcon: Bool = false
+    /// Whether the cards are Liquid Glass, or frosted: see `FlekGlassStyle`.
+    var drawsGlass = true {
+        didSet {
+            guard drawsGlass != oldValue else { return }
+            placeCollectionView()
+        }
+    }
     private(set) var isEditing = false
     private var isContextMenuActive = false
     private var pendingReloadItems: [FlekHomeItem]?
@@ -57,9 +64,16 @@ final class LCSpringboardPageCell: UICollectionViewCell {
     /// Strip left clear at the foot of a phone page for the page dots, which
     /// the springboard draws along the bottom of its own view.
     private static let phoneBottomReserve: CGFloat = 30
+    /// The largest card the phone grid gives: the widest iPhone's, 440pt across.
+    /// Wider pages still on the phone grid — FlekDeck beside another app on an
+    /// iPad, Slide Over, a Stage Manager window short of the iPad grid — keep
+    /// that size, the grid centred in the room to spare, rather than three
+    /// columns stretched until one icon fills a third of the window.
+    private static let phoneMaxCellWidth: CGFloat = 122
 
-    /// Narrowest window that gets the iPad grid. Below it — Slide Over, a small
-    /// Stage Manager window — the phone's three columns suit the width better.
+    /// Narrowest page that gets the iPad grid, on any device. Below it — an iPhone
+    /// held upright, Slide Over, a small Stage Manager window — the phone's three
+    /// columns suit the width better.
     private static let padMinWidth: CGFloat = 600
 
     /// The iPad grid is fixed rather than derived from the height, and both ways
@@ -116,13 +130,43 @@ final class LCSpringboardPageCell: UICollectionViewCell {
                + barClearance - safeAreaBottom)
     }
 
+    /// Padding above the springboard when the search button and the running apps
+    /// stand in the side column. A display with its status bar down one side has
+    /// none across the top, so the grid sits as far from the top as from the sides.
+    static let sideBarGridTopPadding: CGFloat = phoneSideMargin
+
+    /// How far the springboard stops short of the bottom of the display when no
+    /// bar sits there: the page dots' strip ends here, clear of the home indicator.
+    /// Measured from the display's edge rather than the safe area's, since only the
+    /// dots reach into the inset — the room the bar took goes to one more row.
+    static let sideBarGridBottomMargin: CGFloat = 16
+
     /// Whether a page of this size uses the iPad grid.
+    ///
+    /// Decided by the width alone, not by the kind of device. No iPhone page gets
+    /// there: the springboard is held upright, and the widest iPhone is 440pt
+    /// across. The unfolded iPhone Duo does, and it needs to — it is a tablet-sized
+    /// display on a phone, where three columns would stretch each card to 200 to
+    /// 290pt across.
     static func usesPadGrid(pageSize: CGSize) -> Bool {
-        UIDevice.current.userInterfaceIdiom == .pad && pageSize.width >= padMinWidth
+        pageSize.width >= padMinWidth
+    }
+
+    /// The narrowest page the landscape grid's six columns fit across, each at
+    /// its smallest, with a phone's margins either side: 820pt. A wide page short
+    /// of that — FlekDeck in two thirds of an iPad, beside another app — takes
+    /// the upright grid's four columns instead. Six would run past its edges:
+    /// the margin that centres them came out below nothing, and the row was
+    /// pinned to the left edge. The upright grid holds as many icons, so nothing
+    /// moves between pages.
+    private static var padLandscapeMinWidth: CGFloat {
+        let columns = CGFloat(padLandscapeGrid.columns)
+        return columns * padCellWidthRange.lowerBound + (columns - 1) * padMinSpacing
+            + phoneSideMargin * 2
     }
 
     private static func padGrid(forPageSize size: CGSize) -> (columns: Int, rows: Int) {
-        size.width > size.height ? padLandscapeGrid : padPortraitGrid
+        size.width > size.height && size.width >= padLandscapeMinWidth ? padLandscapeGrid : padPortraitGrid
     }
 
     static func columns(forPageSize size: CGSize) -> Int {
@@ -141,7 +185,7 @@ final class LCSpringboardPageCell: UICollectionViewCell {
             let cols = CGFloat(phoneColumns)
             let totalSpacing: CGFloat = phoneSpacing * (cols - 1)
             let availableWidth = screenWidth - (phoneSideMargin * 2) - totalSpacing
-            return floor(availableWidth / cols)
+            return min(floor(availableWidth / cols), phoneMaxCellWidth)
         }
         let target = padColumnPitch(forPageSize: size) * padCellWidthFraction
         return floor(min(max(target, padCellWidthRange.lowerBound), padCellWidthRange.upperBound))
@@ -239,9 +283,16 @@ final class LCSpringboardPageCell: UICollectionViewCell {
     /// The springboard's own size on a screen of the given size: the safe area
     /// and the padding around the grid taken off. For callers that have no view
     /// to measure but need to arrive at the same page capacity.
-    static func estimatedPageSize(screenSize: CGSize, safeAreaInsets: UIEdgeInsets) -> CGSize {
-        CGSize(
-            width: screenSize.width - safeAreaInsets.left - safeAreaInsets.right,
+    static func estimatedPageSize(screenSize: CGSize, safeAreaInsets: UIEdgeInsets,
+                                  barOnSide: Bool = false) -> CGSize {
+        let width = screenSize.width - safeAreaInsets.left - safeAreaInsets.right
+        guard !barOnSide else {
+            return CGSize(width: width,
+                          height: screenSize.height - safeAreaInsets.top
+                            - sideBarGridTopPadding - sideBarGridBottomMargin)
+        }
+        return CGSize(
+            width: width,
             height: screenSize.height - safeAreaInsets.top - safeAreaInsets.bottom
                 - gridTopPadding - gridBottomPadding(safeAreaBottom: safeAreaInsets.bottom)
         )
@@ -249,13 +300,29 @@ final class LCSpringboardPageCell: UICollectionViewCell {
 
     // MARK: - Init
 
+    /// The page's glass, gathered in one container. Each icon's card is a glass
+    /// view of its own, two dozen to a page, and glass in a container is drawn
+    /// as a group rather than one effect at a time, which is what Apple has
+    /// for many glass elements side by side. Spacing 0, so that cards merge
+    /// only where they actually touch, which they never do on the grid.
+    /// Taken out while the cards are frosted, when it has nothing to gather.
+    private let glassContainer: UIVisualEffectView? = {
+        guard #available(iOS 26, *) else { return nil }
+        let effect = UIGlassContainerEffect()
+        effect.spacing = 0
+        let view = UIVisualEffectView(effect: effect)
+        view.clipsToBounds = false
+        view.contentView.clipsToBounds = false
+        return view
+    }()
+
     override init(frame: CGRect) {
         super.init(frame: frame)
 
         clipsToBounds = false
         contentView.clipsToBounds = false
 
-        contentView.addSubview(collectionView)
+        placeCollectionView()
         collectionView.dataSource = self
         collectionView.delegate = self
     }
@@ -264,8 +331,21 @@ final class LCSpringboardPageCell: UICollectionViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// The grid goes in the glass container while the cards are glass, and
+    /// straight in the cell otherwise.
+    private func placeCollectionView() {
+        if let glassContainer, drawsGlass {
+            contentView.addSubview(glassContainer)
+            glassContainer.contentView.addSubview(collectionView)
+        } else {
+            contentView.addSubview(collectionView)
+            glassContainer?.removeFromSuperview()
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        glassContainer?.frame = contentView.bounds
         collectionView.frame = contentView.bounds
         updateFlowLayout()
     }
@@ -304,8 +384,14 @@ final class LCSpringboardPageCell: UICollectionViewCell {
             guard let iconCell = cell as? LCSpringboardIconCell,
                   let idx = collectionView.indexPath(for: iconCell)?.item,
                   idx < items.count else { continue }
-            iconCell.configure(with: items[idx], darkMode: darkModeIcon)
+            iconCell.configure(with: items[idx], darkMode: darkModeIcon, glass: drawsGlass, cardWidth: cardWidth)
         }
+    }
+
+    /// The width this page lays its cards out at, which the icon inside each one
+    /// is sized from — the same width `updateFlowLayout` gives the layout.
+    private var cardWidth: CGFloat {
+        Self.computeCellWidth(forPageSize: contentView.bounds.size)
     }
 
     // MARK: - Edit mode
@@ -401,7 +487,7 @@ extension LCSpringboardPageCell: UICollectionViewDataSource {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "IconCell", for: indexPath) as! LCSpringboardIconCell
         let item = items[indexPath.item]
 
-        cell.configure(with: item, darkMode: darkModeIcon)
+        cell.configure(with: item, darkMode: darkModeIcon, glass: drawsGlass, cardWidth: cardWidth)
 
         // Edit mode state
         if isEditing && !cell.isPlaceholderCell {
@@ -494,7 +580,7 @@ extension LCSpringboardPageCell: UICollectionViewDelegate {
         params.backgroundColor = .clear
         params.visiblePath = UIBezierPath(
             roundedRect: cell.iconImageView.bounds,
-            cornerRadius: LCSpringboardIconCell.iconCornerRadius
+            cornerRadius: LCSpringboardIconCell.iconCornerRadius(forIconSize: cell.iconImageView.bounds.width)
         )
         params.shadowPath = UIBezierPath()
         return UITargetedPreview(view: cell.iconImageView, parameters: params)
@@ -507,7 +593,7 @@ extension LCSpringboardPageCell: UICollectionViewDelegate {
         params.backgroundColor = .clear
         params.visiblePath = UIBezierPath(
             roundedRect: cell.iconImageView.bounds,
-            cornerRadius: LCSpringboardIconCell.iconCornerRadius
+            cornerRadius: LCSpringboardIconCell.iconCornerRadius(forIconSize: cell.iconImageView.bounds.width)
         )
         params.shadowPath = UIBezierPath()
         return UITargetedPreview(view: cell.iconImageView, parameters: params)

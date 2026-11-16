@@ -24,10 +24,14 @@ struct FlekPersonalizationView: View {
     private var wallpaperPhoto: String = ""
     @AppStorage(FlekDeckKeys.homeLayout, store: LCUtils.appGroupUserDefault)
     private var homeLayout: String = FlekHomeLayout.grid.rawValue
+    @AppStorage(FlekDeckKeys.homeBarPosition, store: LCUtils.appGroupUserDefault)
+    private var homeBarPosition: String = FlekHomeBarPosition.bottom.rawValue
 
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
     @AppStorage("LCFrameShortcutIcons", store: LCUtils.appGroupUserDefault) private var frameShortIcon = false
+    @AppStorage(FlekDeckKeys.glassStyle, store: LCUtils.appGroupUserDefault) private var glassStyle: FlekGlassStyle = .liquid
+    @AppStorage(FlekDeckKeys.splitLightShown, store: LCUtils.appGroupUserDefault) private var showsSplitLight = true
 
     @State private var showCollection = false
     @State private var showPhotoPicker = false
@@ -42,12 +46,15 @@ struct FlekPersonalizationView: View {
 
                     HStack(alignment: .top, spacing: 8) {
                         currentPreview
-                        VStack(spacing: 8) {
-                            actionTile(title: "lc.flek.chooseFromCollection".loc, systemImage: "rectangle.grid.3x2.fill") {
-                                showCollection = true
-                            }
-                            actionTile(title: "lc.flek.chooseFromPhotos".loc, systemImage: FlekSymbol.addPhoto) {
-                                showPhotoPicker = true
+                        // One over the other where there is a phone's width for them.
+                        // Side by side where there is far more, on an iPhone Duo opened
+                        // out, like the Grid and List tiles below: stacked there, each
+                        // was a wide, low bar with its icon and label lost in the middle.
+                        GeometryReader { proxy in
+                            if proxy.size.width > Self.sideBySideWidth {
+                                HStack(spacing: 8) { wallpaperActions(large: true) }
+                            } else {
+                                VStack(spacing: 8) { wallpaperActions(large: false) }
                             }
                         }
                         .frame(height: 226)
@@ -68,6 +75,22 @@ struct FlekPersonalizationView: View {
                     .background(card)
                 }
 
+                // MARK: Bar Position
+                // Only the iPhone Duo has a status bar down the side to put the
+                // bar beside.
+                if FlekDeviceModel.isDuo {
+                    VStack(alignment: .leading, spacing: 10) {
+                        sectionHeader("lc.flek.barPosition".loc)
+
+                        HStack(spacing: 8) {
+                            barPositionOption(.bottom, title: "lc.flek.barBottom".loc)
+                            barPositionOption(.side, title: "lc.flek.barSide".loc)
+                        }
+                        .padding(16)
+                        .background(card)
+                    }
+                }
+
                 // MARK: App Icons
                 VStack(alignment: .leading, spacing: 10) {
                     sectionHeader("lc.flek.appIcons".loc)
@@ -84,6 +107,44 @@ struct FlekPersonalizationView: View {
                             .padding(.horizontal, 16).padding(.vertical, 12)
                     }
                     .background(card)
+                }
+
+                // MARK: Glass
+                // Only where there is Liquid Glass to choose: before iOS 26 the
+                // same surfaces are frosted already.
+                if #available(iOS 26.0, *) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        sectionHeader("lc.flek.glass".loc)
+
+                        HStack(spacing: 8) {
+                            glassOption(.liquid, title: "lc.flek.glassLiquid".loc)
+                            glassOption(.frosted, title: "lc.flek.glassFrosted".loc)
+                        }
+                        .padding(16)
+                        .background(card)
+
+                        Text("lc.flek.glass.footer".loc)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                    }
+                }
+
+                // MARK: Split View
+                // Only an iPad has the dot: whether two apps can go side by side
+                // there depends on how it is held and how wide FlekDeck is. Hidden
+                // from its own help, it comes back here.
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    VStack(alignment: .leading, spacing: 10) {
+                        sectionHeader("lc.flek.splitHelp.section".loc)
+                        Toggle("lc.flek.splitHelp.toggle".loc, isOn: $showsSplitLight)
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                            .background(card)
+                        Text("lc.flek.splitHelp.settingFooter".loc)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                    }
                 }
 
                 // MARK: iOS Beta
@@ -184,10 +245,11 @@ struct FlekPersonalizationView: View {
 
     // MARK: Pieces
 
-    /// The phone's screen corner radius (private UIScreen value), clamped into the
-    /// slider's range, used as the default so the bar starts matching the device.
+    /// The corner radius of the display the app is on (private UIScreen value),
+    /// clamped into the slider's range, used as the default so the bar starts
+    /// matching the device.
     private static var deviceCornerRadiusDefault: Double {
-        let r = (UIScreen.main.value(forKey: "_displayCornerRadius") as? CGFloat) ?? 0
+        let r = (FlekTheme.screen.value(forKey: "_displayCornerRadius") as? CGFloat) ?? 0
         let v = r > 0 ? Double(r) : 39
         return min(max(v, 10), 60)
     }
@@ -218,27 +280,70 @@ struct FlekPersonalizationView: View {
         }
     }
 
-    private func actionTile(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    @ViewBuilder
+    private func wallpaperActions(large: Bool) -> some View {
+        actionTile(title: "lc.flek.chooseFromCollection".loc, systemImage: "rectangle.grid.3x2.fill", large: large) {
+            showCollection = true
+        }
+        actionTile(title: "lc.flek.chooseFromPhotos".loc, systemImage: FlekSymbol.addPhoto, large: large) {
+            showPhotoPicker = true
+        }
+    }
+
+    /// Wider than this, the two action tiles stand side by side rather than one
+    /// over the other. A phone leaves them about 200pt, a Pro Max about 260.
+    private static let sideBySideWidth: CGFloat = 300
+
+    private func actionTile(title: String, systemImage: String, large: Bool,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 16) {
-                Image(systemName: systemImage).font(.system(size: 28))
+            VStack(spacing: large ? 20 : 16) {
+                Image(systemName: systemImage).font(.system(size: large ? 40 : 28))
                 Text(title).font(.system(size: 14)).multilineTextAlignment(.center)
             }
             .foregroundStyle(Self.flekBlue)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 24)
+            .padding(.horizontal, large ? 16 : 24)
             .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Self.tileFill))
+            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .buttonStyle(.plain)
     }
 
     private func layoutOption(_ layout: FlekHomeLayout, title: String) -> some View {
-        let selected = homeLayout == layout.rawValue
-        return Button {
+        optionTile(title: title, selected: homeLayout == layout.rawValue) {
             homeLayout = layout.rawValue
-        } label: {
+        } glyph: { selected in
+            LayoutGlyph(layout: layout, selected: selected)
+        }
+    }
+
+    private func barPositionOption(_ position: FlekHomeBarPosition, title: String) -> some View {
+        optionTile(title: title, selected: homeBarPosition == position.rawValue) {
+            homeBarPosition = position.rawValue
+            // The bar over this very page moves with it, into the column or out.
+            NotificationCenter.default.post(name: .multitaskBarPositionChanged, object: nil)
+        } glyph: { selected in
+            BarPositionGlyph(position: position, selected: selected)
+        }
+    }
+
+    private func glassOption(_ style: FlekGlassStyle, title: String) -> some View {
+        optionTile(title: title, selected: glassStyle == style) {
+            glassStyle = style
+        } glyph: { selected in
+            GlassGlyph(style: style, selected: selected)
+        }
+    }
+
+    /// One of a pair of choices side by side: a picture of the phone with its name
+    /// under it, the name filled in blue on the one chosen.
+    private func optionTile<Glyph: View>(title: String, selected: Bool,
+                                         action: @escaping () -> Void,
+                                         @ViewBuilder glyph: (Bool) -> Glyph) -> some View {
+        Button(action: action) {
             VStack(spacing: 16) {
-                LayoutGlyph(layout: layout, selected: selected)
+                glyph(selected)
                     .frame(width: 59, height: 100)
                 if selected {
                     Text(title)
@@ -292,6 +397,63 @@ private struct LayoutGlyph: View {
             }
             .foregroundStyle(tint)
             .offset(y: -2)
+        }
+    }
+}
+
+/// The same phone, with the bar drawn where it goes: under the grid, or in a
+/// column beside it.
+private struct BarPositionGlyph: View {
+    let position: FlekHomeBarPosition
+    let selected: Bool
+
+    var body: some View {
+        let tint = selected ? Color.accentColor : Color.secondary
+        ZStack {
+            Image(systemName: FlekSymbol.device)
+                .font(.system(size: 80, weight: .thin))
+                .foregroundStyle(tint)
+
+            Group {
+                if position == .bottom {
+                    VStack(spacing: 5) {
+                        grid
+                        Capsule().frame(width: 20, height: 5)
+                    }
+                } else {
+                    HStack(spacing: 5) {
+                        grid
+                        Capsule().frame(width: 5, height: 20)
+                    }
+                }
+            }
+            .foregroundStyle(tint)
+            .offset(y: -2)
+        }
+    }
+
+    private var grid: some View {
+        Image(systemName: "square.grid.3x3.fill")
+            .font(.system(size: 16))
+    }
+}
+
+/// The same phone, with a drop for Liquid Glass and a snowflake for frosted.
+private struct GlassGlyph: View {
+    let style: FlekGlassStyle
+    let selected: Bool
+
+    var body: some View {
+        let tint = selected ? Color.accentColor : Color.secondary
+        ZStack {
+            Image(systemName: FlekSymbol.device)
+                .font(.system(size: 80, weight: .thin))
+                .foregroundStyle(tint)
+
+            Image(systemName: style == .liquid ? "drop.fill" : "snowflake")
+                .font(.system(size: 24))
+                .foregroundStyle(tint)
+                .offset(y: -2)
         }
     }
 }

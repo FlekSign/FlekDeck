@@ -9,7 +9,6 @@
 //
 
 import SwiftUI
-import Kingfisher
 import QuartzCore
 
 struct FlekSearchView: View {
@@ -171,18 +170,8 @@ struct FlekSearchView: View {
     private func section<Content: View>(title: String, iconUrl: String? = nil, onOpen: (() -> Void)? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                if let iconUrl, let url = URL(string: iconUrl) {
-                    KFImage(url)
-                        .placeholder { FlekImagePlaceholder(cornerRadius: 4) }
-                        .setProcessor(DownsamplingImageProcessor(size: CGSize(width: 18, height: 18)))
-                        .scaleFactor(UIScreen.main.scale)
-                        .cacheOriginalImage()
-                        .cancelOnDisappear(true)
-                        .fade(duration: 0.15)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 18, height: 18)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                if let iconUrl, URL(string: iconUrl) != nil {
+                    FlekRemoteIcon(url: iconUrl, size: 18, corner: 4)
                 }
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
@@ -819,6 +808,7 @@ private struct SourceAppSearchRow: View {
 private struct GlassBackground<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(FlekDeckKeys.glassStyle, store: LCUtils.appGroupUserDefault) private var glassStyle: FlekGlassStyle = .liquid
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -830,7 +820,7 @@ private struct GlassBackground<S: InsettableShape>: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
+        if #available(iOS 26, *), glassStyle == .liquid {
             content
                 .background {
                     StableLiquidGlass(isDark: isDark, tint: glassTint)

@@ -15922,6 +15922,39 @@
         }
       }
     },
+    "lc.flek.barBottom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bottom"
+          }
+        }
+      }
+    },
+    "lc.flek.barPosition" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bar Position"
+          }
+        }
+      }
+    },
+    "lc.flek.barSide" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Side"
+          }
+        }
+      }
+    },
     "lc.flek.cancelInstall" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16505,17 +16538,6 @@
         }
       }
     },
-    "lc.flek.defaultSource" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Default source"
-          }
-        }
-      }
-    },
     "lc.flek.detail.by %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16545,17 +16567,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Downloads"
-          }
-        }
-      }
-    },
-    "lc.flek.detail.loadFailed" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Couldn't load this app's details."
           }
         }
       }
@@ -16655,6 +16666,50 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Recommended for games"
+          }
+        }
+      }
+    },
+    "lc.flek.glass" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass"
+          }
+        }
+      }
+    },
+    "lc.flek.glass.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frosted is less demanding than Liquid Glass and can improve performance."
+          }
+        }
+      }
+    },
+    "lc.flek.glassFrosted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frosted"
+          }
+        }
+      }
+    },
+    "lc.flek.glassLiquid" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Liquid"
           }
         }
       }
@@ -17671,6 +17726,50 @@
         }
       }
     },
+    "lc.flek.jit.report.caption" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checks again and records the iPhone’s log for support."
+          }
+        }
+      }
+    },
+    "lc.flek.jit.report.notWritten" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The report could not be saved."
+          }
+        }
+      }
+    },
+    "lc.flek.jit.report.recording" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recording the iPhone’s log…"
+          }
+        }
+      }
+    },
+    "lc.flek.jit.report.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send Report"
+          }
+        }
+      }
+    },
     "lc.flek.jit.resetImage" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18254,6 +18353,17 @@
         }
       }
     },
+    "lc.flek.jit.stikdebug.picture" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Screenshot"
+          }
+        }
+      }
+    },
     "lc.flek.jit.stikdebug.script.body" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18580,6 +18690,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No results"
+          }
+        }
+      }
+    },
+    "lc.flek.openInSplitView" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open in Split View"
           }
         }
       }
@@ -19024,6 +19145,347 @@
         }
       }
     },
+    "lc.flek.splitHelp.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows how to use Split View."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.intro" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use two apps side by side"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.legend" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The dot is green when Split View is ready and red when it isn’t."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.more1" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In an app, hold the middle button on its bar and drag the app to a side."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.more2" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On the Home Screen, hold an app’s icon and choose Open in Split View."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.moreWays" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More ways to start"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.narrow" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Make FlekDeck’s window wider to use it."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.notReady" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split View isn’t available right now"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.ready" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split View is ready"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split View"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.settingFooter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A dot beside the app switcher on the Home Screen shows whether Split View is ready. Tap it to see how to use it."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.side1" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drag the line between them to make one bigger."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.side2" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drag the line to the edge to close an app."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.side3" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap the line to swap sides or pair the apps, so opening one opens both."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.sideBySide" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "With two apps side by side"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.step1" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold an app’s icon in this bar."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.step2" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drag it to the left or right side of the screen and let go."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.step3" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pick the second app for the other side."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.toggle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Split View Dot"
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.toggleFooter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You can turn it back on in Settings › Personalization."
+          }
+        }
+      }
+    },
+    "lc.flek.splitHelp.upright" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn your iPad sideways to use it."
+          }
+        }
+      }
+    },
+    "lc.flek.splitLight" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split View"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.closeLeft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close Left App"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.closeRight" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close Right App"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.pair" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pair Apps"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.pairDetail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening one opens both"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.pairedWith %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired with %@"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.pairWith" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pair With"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.swap" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Swap Sides"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.unpair" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unpair Apps"
+          }
+        }
+      }
+    },
+    "lc.flek.splitMenu.unpairDetail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Each opens on its own"
+          }
+        }
+      }
+    },
     "lc.flek.switcherHaptics" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -19031,6 +19493,116 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Multitask Haptics"
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitBar.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold this button and drag the app to the left or right to open another app beside it."
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitBar.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold for Split View"
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitDivider.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pair the apps so opening one opens both, swap their sides, or close one."
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitDivider.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap the Line for More"
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitDot.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Green when Split View is ready, red when it isn’t. Tap it to see how to use it."
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitDot.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split View Dot"
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitStart.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold an app here and drag it to the left or right side of the screen."
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitStart.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Two Apps Side by Side"
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitSwap.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This button shows the app you’re using. Hold it and drag the app to the other side."
+          }
+        }
+      }
+    },
+    "lc.flek.tip.splitSwap.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold to Swap Sides"
           }
         }
       }

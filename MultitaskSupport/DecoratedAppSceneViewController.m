@@ -176,6 +176,11 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     /// trusted that object to still hold the guest's orientation when it came to
     /// be read. An ivar cannot be clobbered by a settings merge.
     UIInterfaceOrientation _lockedGuestOrientation;
+    /// The window was to be re-framed while it flew into its icon, and was left
+    /// where it stood instead; it is caught up once it has landed, out of sight.
+    BOOL _geometryHeldInFlight;
+    /// Set for the length of `-refreshPaneLayout`.
+    BOOL _paneChangeInProgress;
 }
 - (instancetype)initWindowName:(NSString*)windowName bundleId:(NSString*)bundleId dataUUID:(NSString*)dataUUID rootVC:(UIViewController*)rootVC {
     self = [super initWithNibName:nil bundle:nil];
@@ -451,6 +456,10 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     self.view.hidden = YES;
     self.view.transform = CGAffineTransformIdentity;
     [self.view.superview sendSubviewToBack:self.view];
+    if(_geometryHeldInFlight) {
+        _geometryHeldInFlight = NO;
+        [self applyMaximizedLayout];
+    }
 }
 
 - (void)minimizeWindowPiP {
@@ -641,6 +650,11 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     
     // HARD LOCK: same rule on the host-diff path — hold the shape while flat.
     BOOL frozen = LCRotationIsLocked() && _lockedGuestOrientation != UIInterfaceOrientationUnknown;
+    // And while the window flies into its icon; see -applyMaximizedGeometryToSettings:.
+    if(!frozen && [LCWindowFlight holdsGeometryOfView:self.view]) {
+        frozen = YES;
+        _geometryHeldInFlight = YES;
+    }
     if(!frozen) {
         if(self.isMaximized) {
             [self updateMaximizedFrameWithSettings:newSettings];
@@ -789,6 +803,12 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     [self applyMaximizedLayout];
 }
 
+- (void)refreshPaneLayout {
+    _paneChangeInProgress = YES;
+    [self applyMaximizedLayout];
+    _paneChangeInProgress = NO;
+}
+
 - (BOOL)awaitingFirstLayout {
     return _lockedGuestOrientation == UIInterfaceOrientationUnknown;
 }
@@ -839,7 +859,23 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     //
     // Gated on having a settled orientation so a guest opened while the phone is
     // already flat still gets its initial layout; only re-derivation is blocked.
-    if(LCRotationIsLocked() && _lockedGuestOrientation != UIInterfaceOrientationUnknown) return;
+    //
+    // Except for a change of page (see -refreshPaneLayout). The guest keeps the
+    // orientation it is locked to; only the space it is given changes, and an
+    // iPhone Duo opened out is often lying flat when that happens.
+    if(LCRotationIsLocked() && !_paneChangeInProgress
+       && _lockedGuestOrientation != UIInterfaceOrientationUnknown) return;
+    // Nor while the window flies into its icon. The flight was aimed from where
+    // the window stood as it set off, and a window moved under it lands off its
+    // icon by as much as it moved. That is what the bar sliding away on the way
+    // home did: its strip measures nothing as it goes, so a window re-framed then
+    // grew by the bar's height and dropped by half of it. Caught up in
+    // -finishMinimizeWindow, once the window is out of sight.
+    if([LCWindowFlight holdsGeometryOfView:self.view]) {
+        _geometryHeldInFlight = YES;
+        return;
+    }
+    _geometryHeldInFlight = NO;
     [self updateMaximizedFrameWithSettings:settings];
     [self applySceneFrameToSettings:settings orientation:LCGuestSceneOrientation(settings)];
 }
@@ -847,6 +883,16 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
 - (UIEdgeInsets)updateMaximizedSafeAreaWithSettings:(UIMutableApplicationSceneSettings *)settings {
     BOOL bottomWindowBar = [NSUserDefaults.lcSharedDefaults boolForKey:@"LCMultitaskBottomWindowBar"];
     UIEdgeInsets safeAreaInsets = self.view.window.safeAreaInsets;
+    // A window on one side of an iPhone Duo opened out reaches the screen's edge
+    // on one side only. The other is the fold, beside the other app, and the
+    // screen's inset on that side is not this window's to keep clear: the left
+    // app has nothing to do with the status bar's column down the right.
+    CGRect pane = [MultitaskDockManager.shared splitPaneFrameForAppUUID:self.dataUUID];
+    if(!CGRectIsNull(pane)) {
+        CGRect area = UIEdgeInsetsInsetRect(self.view.window.bounds, MultitaskDockManager.shared.barReservedInsets);
+        if(CGRectGetMinX(pane) > CGRectGetMinX(area) + 1) safeAreaInsets.left = 0;
+        if(CGRectGetMaxX(pane) < CGRectGetMaxX(area) - 1) safeAreaInsets.right = 0;
+    }
     if(self.navigationBar.hidden) {
         // Whatever the bar already covers is not the guest's to keep clear a second
         // time — but the edge it covers is not always the bottom. It is the viewer's
@@ -854,27 +900,30 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
         // which way the phone was turned, so the reservation comes off every edge
         // rather than being assumed onto one. Portrait is unchanged by arithmetic:
         // the reservation there is larger than the home-indicator inset it cancels.
-        // The window is held clear of the sensor housing while it is turned (see
-        // -updateMaximizedFrameWithSettings:), so the guest is no longer sitting
-        // under it and must not be told to keep it clear a second time.
         //
-        // Asked of the window's own shape, not of how the device is being held.
-        // The two were the same answer while the window always turned with the
-        // phone, and the top inset was read from the device — a sticky reading,
-        // because the raw one turns face-up on a tilt and would put the inset back
-        // and shift the guest's content for it. Neither is right once the host can
-        // be pinned: an orientation-locked guest keeps a landscape window while the
-        // phone is turned upright, and the device reading then restored the top
-        // inset and laid a strip of the black backdrop across the top of a guest
-        // that had not moved. It fails the other way too — a portrait window under
-        // a sideways phone had its housing clearance taken away and drew under the
-        // island. The window's shape cannot be wrong about the window, and it is
-        // already what the long edges below are asked of, two lines apart.
+        // The sides are handed on as the window has them. A turned window runs under
+        // the sensor housing as a real app does (see -updateMaximizedFrameWithSettings:),
+        // and the guest keeps its content clear of the island through the inset iOS
+        // gives any app turned on its side: the island's clearance on both long
+        // edges. An iPhone Duo's status bar comes through the same way — its strip is
+        // the window's inset on that side, and the guest keeps out of it as it would
+        // anywhere.
+        //
+        // The top is dropped in a wide window, which is asked of the window's own
+        // shape, not of how the device is being held. The two were the same answer
+        // while the window always turned with the phone, and the top inset was read
+        // from the device — a sticky reading, because the raw one turns face-up on a
+        // tilt and would put the inset back and shift the guest's content for it.
+        // Neither is right once the host can be pinned: an orientation-locked guest
+        // keeps a landscape window while the phone is turned upright, and the device
+        // reading then restored the top inset and laid a strip of the black backdrop
+        // across the top of a guest that had not moved. It fails the other way too —
+        // a portrait window under a sideways phone had its housing clearance taken
+        // away and drew under the island. The window's shape cannot be wrong about
+        // the window.
         CGSize windowSize = self.view.window.bounds.size;
         if(windowSize.width > windowSize.height) {
             safeAreaInsets.top = 0;
-            safeAreaInsets.left = 0;
-            safeAreaInsets.right = 0;
         }
         UIEdgeInsets barInsets = MultitaskDockManager.shared.barReservedInsets;
         safeAreaInsets.top    = MAX(safeAreaInsets.top    - barInsets.top,    0);
@@ -980,31 +1029,22 @@ static UIInterfaceOrientation LCWindowOrientation(UIView *view, UIMutableApplica
     // bar may not be on. Zero insets when no bar is up.
     UIEdgeInsets barInsets = MultitaskDockManager.shared.barReservedInsets;
     maxFrame = UIEdgeInsetsInsetRect(maxFrame, barInsets);
-
-    // Held off the sensor housing, but only on the side it is really on.
-    //
-    // Upright the housing is above the window and nothing here has to care. Turned,
-    // it runs along one of the two long edges, and the window is otherwise laid out
-    // straight across it — so the guest draws underneath and the app's own content
-    // is what sits behind the island.
-    //
-    // Which edge cannot be read from the insets: iOS reports the same clearance on
-    // both sides of a turned window, so they say how much and never which. The
-    // orientation says which. In the other direction the housing shares its edge
-    // with the bar, whose strip is already reserved and already covers it, so
-    // nothing is held back there — a second reservation would only be a margin the
-    // app is pushed in by for no reason.
-    CGSize windowSize = self.view.window.bounds.size;
-    if(windowSize.width > windowSize.height) {
-        UIInterfaceOrientation windowOrientation = LCWindowOrientation(self.view, settings);
-        if(windowOrientation == UIInterfaceOrientationLandscapeRight && barInsets.left <= 0) {
-            CGFloat housing = self.view.window.safeAreaInsets.left;
-            maxFrame = UIEdgeInsetsInsetRect(maxFrame, UIEdgeInsetsMake(0, housing, 0, 0));
-        }
+    // Beside another app, on an iPhone Duo opened out: only this app's side of
+    // the fold. The guest's drawable is sized from the window below, so it is
+    // laid out for its page as it would be for a screen that size.
+    CGRect pane = [MultitaskDockManager.shared splitPaneFrameForAppUUID:self.dataUUID];
+    if(!CGRectIsNull(pane)) {
+        maxFrame = CGRectIntersection(maxFrame, pane);
     }
 
-
-
+    // Not held off the sensor housing when turned. A real app turned on its side
+    // runs under the island and keeps its own controls clear of it through its
+    // safe area, which the guest is handed as the window has it (see
+    // -updateMaximizedSafeAreaWithSettings:). A window cut short beside the island
+    // was narrower than the app expected by the island's clearance, and an app
+    // that keeps the same margin on both sides of its window, as YouTube's player
+    // does, kept that clearance a second time inside it: the controls on the
+    // island's side stood twice as far in, and the picture sat off centre.
     [self setWindowFrame:maxFrame];
 }
 

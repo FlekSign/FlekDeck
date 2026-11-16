@@ -44,7 +44,8 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
         void* taskSelf = SecTaskCreateFromSelf(NULL);
         CFErrorRef error = NULL;
         CFTypeRef cfans = SecTaskCopyValueForEntitlement(taskSelf, CFSTR("com.apple.developer.team-identifier"), &error);
-        if(CFGetTypeID(cfans) == CFStringGetTypeID()) {
+        // NULL where the signature has no team: CFGetTypeID would trap on it.
+        if(cfans && CFGetTypeID(cfans) == CFStringGetTypeID()) {
             ans = (__bridge NSString*)cfans;
         }
         CFRelease(taskSelf);
@@ -52,7 +53,11 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
         if(!ans) {
             // the above seems not to work if the device is jailbroken by Palera1n, so we use the public api one as backup
             // https://stackoverflow.com/a/11841898
-            NSString *tempAccountName = @"bundleSeedID";
+            // Named for this process. A guest comes here as it starts (in the
+            // simulator, always), and two starting together, as a pair opening
+            // in Split View, shared one item: one added it, the other's add
+            // failed as a duplicate, and that guest was left with no team.
+            NSString *tempAccountName = [NSString stringWithFormat:@"bundleSeedID.%d", getpid()];
             NSDictionary *query = @{
                 (__bridge NSString *)kSecClass : (__bridge NSString *)kSecClassGenericPassword,
                 (__bridge NSString *)kSecAttrAccount : tempAccountName,
@@ -214,6 +219,53 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
     return YES;
 }
 
+// Adds a launch of the app in folder `bundleName` to the history FlekDeck's
+// Apps widget orders its Most Used apps by. FlekDeck records the launches it
+// starts itself (WidgetLaunchHistory in WidgetAppList.swift, which this must
+// match: same file, Unix times, 60 days, 100 per app, a minute between two);
+// this covers a running app switching to another, which FlekDeck never sees.
++ (void)recordWidgetLaunchOfApp:(NSString *)bundleName {
+    // Only in FlekDeck's own process, whose bundle ID the history is filed under.
+    if(NSUserDefaults.isLiveProcess) {
+        return;
+    }
+    NSURL *groupPath = [self appGroupPath];
+    NSString *appBundleID = NSUserDefaults.lcMainBundle.bundleIdentifier;
+    if(!groupPath || !appBundleID) {
+        return;
+    }
+    NSURL *folder = [[groupPath URLByAppendingPathComponent:@"LiveContainer/Widget"] URLByAppendingPathComponent:appBundleID];
+    NSURL *historyURL = [folder URLByAppendingPathComponent:@"Launches.json"];
+
+    NSMutableDictionary *launches = [NSMutableDictionary new];
+    NSData *data = [NSData dataWithContentsOfURL:historyURL];
+    id saved = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if([saved isKindOfClass:NSDictionary.class]) {
+        [launches addEntriesFromDictionary:saved];
+    }
+
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSMutableArray<NSNumber *> *times = [NSMutableArray new];
+    id savedTimes = launches[bundleName];
+    for(id time in [savedTimes isKindOfClass:NSArray.class] ? savedTimes : @[]) {
+        if([time isKindOfClass:NSNumber.class] && now - [time doubleValue] < 60 * 24 * 60 * 60) {
+            [times addObject:time];
+        }
+    }
+    if(times.count > 0 && now - times.lastObject.doubleValue < 60) {
+        return;
+    }
+    [times addObject:@(now)];
+    if(times.count > 100) {
+        [times removeObjectsInRange:NSMakeRange(0, times.count - 100)];
+    }
+    launches[bundleName] = times;
+
+    NSData *newData = [NSJSONSerialization dataWithJSONObject:launches options:0 error:nil];
+    [NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    [newData writeToURL:historyURL atomically:YES];
+}
+
 + (BOOL)launchToGuestAppWithURL:(NSURL *)url {
     NSURLComponents* components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if(![components.host isEqualToString:@"livecontainer-launch"]) return NO;
@@ -235,6 +287,7 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
         if (openUrl) {
             [lcUserDefaults setObject:openUrl forKey:@"launchAppUrlScheme"];
         }
+        [self recordWidgetLaunchOfApp:launchBundleId];
         
         // Attempt to restart LiveContainer with the selected guest app
         [lcUserDefaults setObject:launchBundleId forKey:@"selected"];

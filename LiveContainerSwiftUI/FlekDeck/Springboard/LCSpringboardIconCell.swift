@@ -70,6 +70,23 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         return iv
     }()
 
+    /// Under the title of an app paired with another, so that opening either
+    /// opens both side by side: a link, then the other app's icon, small.
+    private let pairBadge: UIImageView = {
+        let iv = UIImageView()
+        iv.tintColor = .secondaryLabel
+        iv.contentMode = .center
+        iv.isHidden = true
+        return iv
+    }()
+
+    private let pairPartnerIcon: UIImageView = {
+        let iv = UIImageView()
+        iv.contentMode = .scaleAspectFit
+        iv.isHidden = true
+        return iv
+    }()
+
     /// The red count on the icon's corner, as an iOS home screen badges an app:
     /// Settings shows 1 while no certificate is imported. A label rather than
     /// an image, so a count of two digits widens into a capsule.
@@ -130,8 +147,11 @@ final class LCSpringboardIconCell: UICollectionViewCell {
     }()
 
     /// Hosted SwiftUI percentage view with `.contentTransition(.numericText())`.
+    /// Made the first time this cell shows a download: every icon on the home
+    /// screen is one of these cells, and only one being installed ever shows a
+    /// percentage. See `percentHost()`.
     private var percentHostingController: UIHostingController<PercentageText>?
-    private var percentHostView: UIView!
+    private var percentHostView: UIView? { percentHostingController?.view }
 
     /// Blue progress bar near bottom of icon (download phase).
     private let progressTrack: UIView = {
@@ -189,8 +209,11 @@ final class LCSpringboardIconCell: UICollectionViewCell {
     /// Used by the drag manager to read back cell order after moves.
     private(set) var configuredItem: FlekHomeItem?
 
-    /// Liquid Glass (iOS 26+) or thin material card background.
+    /// Liquid Glass (iOS 26+) or thin material card background. Made on the first
+    /// `configure`, and again when the glass style changes.
     private var glassBackgroundView: UIVisualEffectView?
+    /// Whether the card is Liquid Glass rather than blur.
+    private var cardIsGlass = false
 
     // MARK: - Layout constants
 
@@ -205,34 +228,42 @@ final class LCSpringboardIconCell: UICollectionViewCell {
     private static let labelTopSpacingFraction: CGFloat = 8.0 / 110.0
     /// 11pt against the design's card, and the same share of a wider one.
     private static let labelFontFraction: CGFloat = 11.0 / 110.0
+    /// The pair row under the title, in the 16pt the design's card leaves
+    /// below it: the other app's icon 11pt across, the link 9pt.
+    private static let pairIconFraction: CGFloat = 11.0 / 110.0
+    private static let pairGlyphFraction: CGFloat = 9.0 / 110.0
     /// The squircle's corner as a share of its side — the same ratio
     /// `LCMinimizeToIconAnimator` rounds a landing window to.
     private static let iconCornerFraction: CGFloat = 0.2237
 
-    /// The card this icon sits in, worked out from the screen rather than from
-    /// the cell's own bounds: the icon is rasterised when the cell is
-    /// configured, which happens before it has been laid out. Measured across
-    /// the screen's narrow side, so turning the device does not re-render every
-    /// icon at a new size.
-    static var cellWidth: CGFloat {
-        let screen = UIScreen.main.bounds.size
-        return LCSpringboardPageCell.computeCellWidth(
-            forPageSize: CGSize(width: min(screen.width, screen.height),
-                                height: max(screen.width, screen.height))
-        )
+    /// Width of the card this cell is, which everything inside it is a share of.
+    ///
+    /// The card's own width, not one worked out from the screen. A page can be
+    /// narrower than the display it is on: the iPhone Duo's cover display keeps a
+    /// vertical status bar down one side, and icons measured against the whole
+    /// display came out sized for cards a quarter wider than the ones they sat in.
+    /// Handed over by the page with each item, since the icon is rasterised as the
+    /// item arrives, before the cell has been laid out; layout then reads it off the
+    /// cell's own bounds, which a turned iPad grid can make a few points narrower.
+    private var cardWidth: CGFloat = 0
+
+    private var iconSize: CGFloat { (cardWidth * Self.iconWidthFraction).rounded() }
+    private var iconCornerRadius: CGFloat { Self.iconCornerRadius(forIconSize: iconSize) }
+    private var labelSize: CGSize {
+        CGSize(width: (cardWidth * Self.labelWidthFraction).rounded(),
+               height: (cardWidth * Self.labelHeightFraction).rounded())
+    }
+    private var pairIconSize: CGFloat { (cardWidth * Self.pairIconFraction).rounded() }
+    private var labelTopSpacing: CGFloat {
+        (cardWidth * Self.labelTopSpacingFraction).rounded()
+    }
+    private var labelFont: UIFont {
+        .systemFont(ofSize: (cardWidth * Self.labelFontFraction).rounded(), weight: .medium)
     }
 
-    static var iconSize: CGFloat { (cellWidth * iconWidthFraction).rounded() }
-    static var iconCornerRadius: CGFloat { (iconSize * iconCornerFraction).rounded() }
-    private static var labelSize: CGSize {
-        CGSize(width: (cellWidth * labelWidthFraction).rounded(),
-               height: (cellWidth * labelHeightFraction).rounded())
-    }
-    private static var labelTopSpacing: CGFloat {
-        (cellWidth * labelTopSpacingFraction).rounded()
-    }
-    private static var labelFont: UIFont {
-        .systemFont(ofSize: (cellWidth * labelFontFraction).rounded(), weight: .medium)
+    /// The squircle corner of an icon this many points across.
+    static func iconCornerRadius(forIconSize size: CGFloat) -> CGFloat {
+        (size * iconCornerFraction).rounded()
     }
 
     /// The notification badge's height as a share of the icon's side, so it
@@ -266,12 +297,12 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         clipsToBounds = false
         contentView.clipsToBounds = false
 
-        setupGlassBackground()
-
         contentView.addSubview(iconImageView)
         contentView.addSubview(nameLabel)
         contentView.addSubview(singleBadge)
         contentView.addSubview(jitBadge)
+        contentView.addSubview(pairBadge)
+        contentView.addSubview(pairPartnerIcon)
         contentView.addSubview(notificationBadge)
         contentView.addSubview(deleteButton)
 
@@ -282,12 +313,6 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         installOverlay.addSubview(spinnerRingView)
         installOverlay.addSubview(failedSymbol)
 
-        let hostingVC = UIHostingController(rootView: PercentageText(percent: 0))
-        hostingVC.view.backgroundColor = .clear
-        hostingVC.view.isHidden = true
-        percentHostingController = hostingVC
-        percentHostView = hostingVC.view
-        installOverlay.addSubview(percentHostView)
         progressTrack.addSubview(progressFill)
         installOverlay.addSubview(progressTrack)
         installOverlay.layer.addSublayer(ringTrackLayer)
@@ -299,19 +324,27 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         contentView.addGestureRecognizer(tap)
     }
 
-    private func setupGlassBackground() {
+    /// Puts the card behind the icon in place of the one there, if any.
+    private func setGlassBackground(glass: Bool) {
+        let effectView = Self.makeCardBackground(glass: glass, traits: traitCollection)
+        if let old = glassBackgroundView {
+            effectView.frame = old.frame
+            effectView.isHidden = old.isHidden
+            old.removeFromSuperview()
+        }
+        contentView.insertSubview(effectView, at: 0)
+        glassBackgroundView = effectView
+        cardIsGlass = glass
+    }
+
+    /// A card: Liquid Glass, or — before iOS 26, and when frosted — a thin
+    /// material with a tint overlay for the frosted look.
+    private static func makeCardBackground(glass: Bool, traits: UITraitCollection) -> UIVisualEffectView {
         let effectView: UIVisualEffectView
-        if #available(iOS 26, *) {
+        if #available(iOS 26, *), glass {
             effectView = UIVisualEffectView(effect: UIGlassEffect(style: .regular))
         } else {
             effectView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-        }
-        effectView.layer.cornerRadius = Self.cardCorner
-        effectView.layer.cornerCurve = .continuous
-        effectView.clipsToBounds = true
-
-        // On pre-iOS 26, add a tint overlay for the frosted look
-        if #unavailable(iOS 26) {
             let tint = UIView()
             tint.backgroundColor = UIColor.label.withAlphaComponent(0.15)
             tint.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -319,17 +352,23 @@ final class LCSpringboardIconCell: UICollectionViewCell {
 
             // Subtle border
             effectView.layer.borderWidth = 0.5
-            effectView.layer.borderColor = UIColor.label.withAlphaComponent(0.15).cgColor
+            effectView.layer.borderColor = cardRimColor.resolvedColor(with: traits).cgColor
         }
-
-        contentView.insertSubview(effectView, at: 0)
-        glassBackgroundView = effectView
+        effectView.layer.cornerRadius = Self.cardCorner
+        effectView.layer.cornerCurve = .continuous
+        effectView.clipsToBounds = true
+        return effectView
     }
+
+    /// The blur card's border. A layer's border is a fixed colour rather than
+    /// one that follows the appearance, so it is resolved again when that changes.
+    private static let cardRimColor = UIColor.label.withAlphaComponent(0.15)
 
     override func layoutSubviews() {
         super.layoutSubviews()
 
         let bounds = contentView.bounds
+        if bounds.width > 0 { cardWidth = bounds.width }
 
         // Glass card fills the full cell bounds
         glassBackgroundView?.frame = bounds
@@ -337,9 +376,9 @@ final class LCSpringboardIconCell: UICollectionViewCell {
 
         // Content block: icon + spacing + label, centred in the card, so the
         // room left over falls equally above the icon and below the title.
-        let iconS = Self.iconSize
-        let labelS = Self.labelSize
-        let labelGap = Self.labelTopSpacing
+        let iconS = iconSize
+        let labelS = labelSize
+        let labelGap = labelTopSpacing
         let contentHeight = iconS + labelGap + labelS.height
         let contentY = ((bounds.height - contentHeight) / 2).rounded()
 
@@ -347,7 +386,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         iconImageView.frame = CGRect(x: iconX, y: contentY, width: iconS, height: iconS)
 
         installOverlay.frame = iconImageView.bounds
-        installOverlay.layer.cornerRadius = Self.iconCornerRadius
+        installOverlay.layer.cornerRadius = iconCornerRadius
         installOverlay.clipsToBounds = true
         failedSymbol.frame = installOverlay.bounds
         // Spinning ring (indeterminate state)
@@ -366,7 +405,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         spinnerFillLayer.path = spinnerPath.cgPath
         spinnerFillLayer.frame = spinnerBounds
 
-        percentHostView.frame = CGRect(x: 0, y: 0, width: iconS, height: iconS)
+        percentHostView?.frame = CGRect(x: 0, y: 0, width: iconS, height: iconS)
 
         // Progress bar near bottom of icon (download phase)
         let trackW = iconS * 0.78
@@ -394,7 +433,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         // Rotate so stroke starts at top (clockwise)
         ringFillLayer.transform = CATransform3DMakeRotation(-.pi / 2, 0, 0, 1)
 
-        nameLabel.font = Self.labelFont
+        nameLabel.font = labelFont
         nameLabel.frame = CGRect(
             x: ((bounds.width - labelS.width) / 2).rounded(),
             y: contentY + iconS + labelGap,
@@ -412,6 +451,20 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         )
         // JIT badge (top-left corner of glass card)
         jitBadge.frame = CGRect(x: 8, y: 8, width: badgeSize, height: badgeSize)
+        // Pair row: the link, then the other app's icon, centred under the
+        // title in the room left below it, so the icon and title stay where
+        // every other card has them.
+        let pairIconS = pairIconSize
+        let glyph = pairBadge.image?.size ?? CGSize(width: pairIconS, height: pairIconS)
+        let pairSpacing: CGFloat = 2
+        let rowCenterY = ((nameLabel.frame.maxY + bounds.maxY) / 2).rounded()
+        let rowWidth = glyph.width + (pairPartnerIcon.isHidden ? 0 : pairSpacing + pairIconS)
+        let rowX = (bounds.midX - rowWidth / 2).rounded()
+        pairBadge.frame = CGRect(x: rowX, y: (rowCenterY - glyph.height / 2).rounded(),
+                                 width: glyph.width, height: glyph.height)
+        pairPartnerIcon.frame = CGRect(x: rowX + glyph.width + pairSpacing,
+                                       y: (rowCenterY - pairIconS / 2).rounded(),
+                                       width: pairIconS, height: pairIconS)
 
         // Notification badge: hung off the icon's top-right corner the way iOS
         // hangs one, mostly over the icon. A count wider than a circle grows
@@ -455,6 +508,9 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
             updateDeleteButtonColors()
             if currentNameIsShared { setName(currentName, shared: true) }
+            if !cardIsGlass {
+                glassBackgroundView?.layer.borderColor = Self.cardRimColor.resolvedColor(with: traitCollection).cgColor
+            }
         }
     }
 
@@ -475,15 +531,15 @@ final class LCSpringboardIconCell: UICollectionViewCell {
     }
 
     private static func roundedImage(_ image: UIImage?, size: CGFloat, radius: CGFloat,
-                                     cacheKey: String? = nil) -> UIImage? {
-        guard let image else { return nil }
+                                     scale: CGFloat, cacheKey: String? = nil) -> UIImage? {
+        guard let image, size > 0 else { return nil }
         let key = cacheKey.map { "\($0)|\(size)|\(radius)" as NSString }
         if let key, let cached = roundedCache.object(forKey: key) { return cached }
 
         let rect = CGRect(x: 0, y: 0, width: size, height: size)
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false
-        format.scale = UIScreen.main.scale
+        format.scale = scale
         let rendered = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
             UIBezierPath(roundedRect: rect, cornerRadius: radius).addClip()
             image.draw(in: rect)
@@ -505,6 +561,9 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         // the next app to be handed that cell drew its name over no icon at all,
         // and kept doing so: nothing else ever put the transform back.
         iconImageView.transform = .identity
+        // And the icon a window was flying into or out of when the page was
+        // recycled, which stood aside for the flight and would otherwise stay gone.
+        iconImageView.alpha = 1
         nameLabel.alpha = 1
         setName(nil, shared: false)
         deleteButton.isHidden = true
@@ -512,11 +571,14 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         singleBadge.isHidden = true
         jitBadge.isHidden = true
         jitBadge.alpha = 1
+        pairBadge.isHidden = true
+        pairPartnerIcon.isHidden = true
+        pairPartnerIcon.image = nil
         setNotificationCount(0)
         installOverlay.isHidden = true
         spinnerRingView.isHidden = true
         stopSpinnerAnimation()
-        percentHostView.isHidden = true
+        percentHostView?.isHidden = true
         percentHostingController?.rootView = PercentageText(percent: 0)
         progressTrack.isHidden = true
         ringTrackLayer.isHidden = true
@@ -546,16 +608,24 @@ final class LCSpringboardIconCell: UICollectionViewCell {
     private var currentName: String?
     private var currentNameIsShared = false
 
-    func configure(with item: FlekHomeItem, darkMode: Bool) {
+    /// - Parameter glass: whether the card is Liquid Glass, or frosted.
+    /// - Parameter cardWidth: the width the page lays this card out at — see
+    ///   `cardWidth`.
+    func configure(with item: FlekHomeItem, darkMode: Bool, glass: Bool, cardWidth: CGFloat) {
         configuredItem = item
+        if cardWidth > 0 { self.cardWidth = cardWidth }
+        if glassBackgroundView == nil || glass != cardIsGlass {
+            setGlassBackground(glass: glass)
+        }
         // Only a built-in app carries a count. Worked out for every item, as a
         // cell refreshed in place for another item must not keep the last one's.
         var notificationCount = 0
         switch item {
         case .defaultApp(let kind):
             iconImageView.image = Self.roundedImage(UIImage(named: kind.iconAssetName),
-                                                    size: Self.iconSize,
-                                                    radius: Self.iconCornerRadius,
+                                                    size: iconSize,
+                                                    radius: iconCornerRadius,
+                                                    scale: FlekTheme.screen.scale,
                                                     cacheKey: "builtin:\(kind.iconAssetName)")
             setName(kind.title, shared: false)
             notificationCount = kind.badgeCount(in: DataManager.shared.model)
@@ -563,8 +633,9 @@ final class LCSpringboardIconCell: UICollectionViewCell {
 
         case .installed(let app):
             iconImageView.image = Self.roundedImage(app.appInfo.iconIsDarkIcon(darkMode),
-                                                    size: Self.iconSize,
-                                                    radius: Self.iconCornerRadius,
+                                                    size: iconSize,
+                                                    radius: iconCornerRadius,
+                                                    scale: FlekTheme.screen.scale,
                                                     cacheKey: (app.appInfo.relativeBundlePath).map { "app:\($0):\(app.uiIsShared):\(darkMode)" })
             setName(app.appInfo.displayName(), shared: app.uiIsShared)
             showBadges(for: app)
@@ -583,6 +654,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             isPlaceholderCell = true
         }
         setNotificationCount(notificationCount)
+        setPairRow(for: item, darkMode: darkMode)
     }
 
     /// Shows `count` in the notification badge, or no badge at all for 0.
@@ -612,7 +684,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             nameLabel.text = name
             return
         }
-        let font = Self.labelFont
+        let font = labelFont
         let attachment = NSTextAttachment()
         // A font-based configuration sizes the symbol to the title and sits it
         // on the same baseline.
@@ -641,6 +713,42 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         jitBadge.isHidden = !app.uiIsJITNeeded
     }
 
+    /// The pair row under the title: the link, and the icon of the app this
+    /// one opens beside; the link alone if that app is not on the home screen.
+    private func setPairRow(for item: FlekHomeItem, darkMode: Bool) {
+        let partnerID = item.splitPartnerID
+        let partner = partnerID.flatMap { id in
+            LCSpringboardViewController.current?.flatItems.first { $0.id == id }
+        }
+        pairBadge.isHidden = partnerID == nil
+        if partnerID != nil {
+            let glyphSize = (cardWidth * Self.pairGlyphFraction).rounded()
+            pairBadge.image = UIImage(systemName: "link",
+                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: glyphSize,
+                                                                                     weight: .semibold))
+        }
+        pairPartnerIcon.image = partner.flatMap { Self.smallIcon(for: $0, size: pairIconSize, darkMode: darkMode) }
+        pairPartnerIcon.isHidden = pairBadge.isHidden || pairPartnerIcon.image == nil
+        setNeedsLayout()
+    }
+
+    /// An app's or built-in page's icon `size` points across, rounded as on its
+    /// card: for the pair row, and for menus that list apps.
+    static func smallIcon(for item: FlekHomeItem, size: CGFloat, darkMode: Bool) -> UIImage? {
+        let radius = iconCornerRadius(forIconSize: size)
+        let scale = FlekTheme.screen.scale
+        switch item {
+        case .installed(let app):
+            return roundedImage(app.appInfo.iconIsDarkIcon(darkMode), size: size, radius: radius, scale: scale,
+                                cacheKey: (app.appInfo.relativeBundlePath).map { "app:\($0):\(app.uiIsShared):\(darkMode)" })
+        case .defaultApp(let kind):
+            return roundedImage(UIImage(named: kind.iconAssetName), size: size, radius: radius, scale: scale,
+                                cacheKey: "builtin:\(kind.iconAssetName)")
+        default:
+            return nil
+        }
+    }
+
     /// Update just the install state (progress/icon) without full reconfigure.
     func updateInstallState() {
         guard case .installing(let inst) = configuredItem else { return }
@@ -659,9 +767,15 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             if urlStr != loadingIconURL || iconImageView.image == nil {
                 loadingIconURL = urlStr
                 iconLoadTask?.cancel()
+                // Measured here, on the main thread, rather than in the completion
+                // handler: the sizes are read off the app's scene, which UIKit only
+                // answers for on the main thread.
+                let size = iconSize
+                let radius = iconCornerRadius
+                let scale = FlekTheme.screen.scale
                 iconLoadTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
                     guard let data, let image = UIImage(data: data) else { return }
-                    let rounded = LCSpringboardIconCell.roundedImage(image, size: LCSpringboardIconCell.iconSize, radius: LCSpringboardIconCell.iconCornerRadius)
+                    let rounded = LCSpringboardIconCell.roundedImage(image, size: size, radius: radius, scale: scale)
                     DispatchQueue.main.async {
                         self?.iconImageView.image = rounded
                     }
@@ -684,7 +798,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             failedSymbol.isHidden = false
             spinnerRingView.isHidden = true
             stopSpinnerAnimation()
-            percentHostView.isHidden = true
+            percentHostView?.isHidden = true
             progressTrack.isHidden = true
             ringTrackLayer.isHidden = true
             ringFillLayer.isHidden = true
@@ -697,7 +811,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             // Indeterminate: show spinning ring, hide everything else
             spinnerRingView.isHidden = false
             startSpinnerAnimation()
-            percentHostView.isHidden = true
+            percentHostView?.isHidden = true
             progressTrack.isHidden = true
             ringTrackLayer.isHidden = true
             ringFillLayer.isHidden = true
@@ -706,7 +820,7 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             // Install phase: show circular ring
             spinnerRingView.isHidden = true
             stopSpinnerAnimation()
-            percentHostView.isHidden = true
+            percentHostView?.isHidden = true
             progressTrack.isHidden = true
             ringTrackLayer.isHidden = false
             ringFillLayer.isHidden = false
@@ -719,14 +833,27 @@ final class LCSpringboardIconCell: UICollectionViewCell {
             // Download phase: show percentage + progress bar
             spinnerRingView.isHidden = true
             stopSpinnerAnimation()
-            percentHostView.isHidden = false
-            percentHostingController?.rootView = PercentageText(percent: Int((state.fraction * 100).rounded()))
+            let percent = percentHost()
+            percent.view.isHidden = false
+            percent.rootView = PercentageText(percent: Int((state.fraction * 100).rounded()))
             progressTrack.isHidden = false
             ringTrackLayer.isHidden = true
             ringFillLayer.isHidden = true
             currentFraction = state.fraction
             updateProgressFillWidth()
         }
+    }
+
+    /// The percentage view, made on first use, below the progress bar where it
+    /// has always stood.
+    private func percentHost() -> UIHostingController<PercentageText> {
+        if let percentHostingController { return percentHostingController }
+        let hostingVC = UIHostingController(rootView: PercentageText(percent: 0))
+        hostingVC.view.backgroundColor = .clear
+        installOverlay.insertSubview(hostingVC.view, belowSubview: progressTrack)
+        percentHostingController = hostingVC
+        setNeedsLayout()
+        return hostingVC
     }
 
     private func updateProgressFillWidth() {
@@ -844,22 +971,8 @@ final class LCSpringboardIconCell: UICollectionViewCell {
         // 1. Card background — recreate instead of snapshotting
         // (UIVisualEffectView snapshots are unreliable, especially UIGlassEffect)
         if let glass = glassBackgroundView {
-            let bgCopy: UIVisualEffectView
-            if #available(iOS 26, *) {
-                bgCopy = UIVisualEffectView(effect: UIGlassEffect(style: .regular))
-            } else {
-                bgCopy = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-                let tint = UIView()
-                tint.backgroundColor = UIColor.label.withAlphaComponent(0.15)
-                tint.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                bgCopy.contentView.addSubview(tint)
-                bgCopy.layer.borderWidth = 0.5
-                bgCopy.layer.borderColor = UIColor.label.withAlphaComponent(0.15).cgColor
-            }
+            let bgCopy = Self.makeCardBackground(glass: cardIsGlass, traits: traitCollection)
             bgCopy.frame = glass.frame
-            bgCopy.layer.cornerRadius = Self.cardCorner
-            bgCopy.layer.cornerCurve = .continuous
-            bgCopy.clipsToBounds = true
             container.addSubview(bgCopy)
         }
 

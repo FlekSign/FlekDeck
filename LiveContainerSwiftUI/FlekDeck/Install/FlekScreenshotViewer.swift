@@ -2,9 +2,9 @@
 //  FlekScreenshotViewer.swift
 //  LiveContainerSwiftUI
 //
-//  Full-screen screenshot browser opened by tapping a shot on an app's page.
-//  Pages between them, zooms into one, and drags away downwards like the system
-//  photo viewer.
+//  Full-screen screenshot browser opened by tapping a shot on an app's page,
+//  or a picture in the StikDebug guide. Pages between them, zooms into one, and
+//  drags away downwards like the system photo viewer.
 //
 
 import SwiftUI
@@ -12,7 +12,13 @@ import UIKit
 import Kingfisher
 
 struct FlekScreenshotViewer: View {
-    let photos: [String]
+    /// A shot, from the web or from the app's own asset catalog.
+    enum Photo {
+        case remote(String)
+        case asset(String)
+    }
+
+    let photos: [Photo]
     /// Which shot is on screen. Owned by the page that opened the viewer, so the
     /// zoom transition knows which thumbnail to shrink back into after paging.
     @Binding var index: Int
@@ -20,7 +26,19 @@ struct FlekScreenshotViewer: View {
     /// a block of roughly the right size rather than a spinner in empty space.
     var aspect: CGFloat = FlekAppDetailModel.fallbackAspect
 
+    /// Shots at these web addresses.
+    init(photos: [String], index: Binding<Int>, aspect: CGFloat = FlekAppDetailModel.fallbackAspect) {
+        self.init(photos: photos.map(Photo.remote), index: index, aspect: aspect)
+    }
+
+    init(photos: [Photo], index: Binding<Int>, aspect: CGFloat = FlekAppDetailModel.fallbackAspect) {
+        self.photos = photos
+        self._index = index
+        self.aspect = aspect
+    }
+
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// Room the multitask bar's chin takes along the bottom of the screen.
     ///
     /// The viewer is a full-screen cover — its own controller, which doesn't
@@ -82,10 +100,15 @@ struct FlekScreenshotViewer: View {
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
             ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)
-        // Same rule as the dock's: on iPhone the bar moves to the right edge in
-        // landscape, where it takes nothing from the bottom. On iPad it stays put.
-        let onSideEdge = (scene?.interfaceOrientation.isLandscape ?? false)
-            && UIDevice.current.userInterfaceIdiom != .pad
+        // Same rule as the dock's: when the height is short — an iPhone or the
+        // iPhone Duo's cover display in landscape — the bar moves to a side edge,
+        // where it takes nothing from the bottom. On iPad, and on the unfolded
+        // Duo, it stays put — unless it stands in the side column beside the Duo's
+        // status bar, which takes nothing from the bottom either.
+        let onSideEdge = ((scene?.interfaceOrientation.isLandscape ?? false)
+            && scene?.traitCollection.userInterfaceIdiom != .pad
+            && scene?.traitCollection.verticalSizeClass == .compact)
+            || MultitaskDockManager.barStandsInSideColumn(for: scene?.traitCollection)
         guard manager.isVisible, manager.isSwitcherBarVisible, !onSideEdge else {
             barInset = 0
             return
@@ -141,6 +164,9 @@ struct FlekScreenshotViewer: View {
             guard UIDevice.current.orientation.isValidInterfaceOrientation else { return }
             updateBarInset()
         }
+        // Folding or unfolding an iPhone Duo moves the bar without turning the
+        // device.
+        .onChange(of: verticalSizeClass) { _ in updateBarInset() }
     }
 
     private var closeButton: some View {
@@ -168,14 +194,16 @@ struct FlekScreenshotViewer: View {
 
 private extension View {
     /// The close button's surface: real Liquid Glass where the system has it,
-    /// and the frosted circle it had before everywhere else. Interactive, so a
-    /// press deforms the glass the way every other system control does.
+    /// and the frosted circle it had before everywhere else, the frosted glass
+    /// style included. Interactive, so a press deforms the glass the way every
+    /// other system control does. The style is read rather than watched: it can't
+    /// be changed while the viewer is up.
     // Erased to AnyView so the iOS 26-only type `glassEffect` produces isn't
     // baked into this function's static type — the runtime resolves that type
     // before the availability check runs, and traps on older systems where the
     // type is absent.
     func closeButtonGlass() -> AnyView {
-        if #available(iOS 26, *) {
+        if #available(iOS 26, *), LCUtils.appGroupUserDefault.string(forKey: FlekDeckKeys.glassStyle) != FlekGlassStyle.frosted.rawValue {
             return AnyView(self.glassEffect(.regular.interactive(), in: .circle))
         }
         return AnyView(
@@ -189,7 +217,7 @@ private extension View {
 /// One shot in the viewer: the zoom container, with the gallery's placeholder
 /// block behind it until the shot has loaded.
 private struct FlekZoomableScreenshot: View {
-    let photo: String
+    let photo: FlekScreenshotViewer.Photo
     let aspect: CGFloat
     /// Whether this is the shot on screen. One paged away from drops back to
     /// 1x, so coming back to it starts fitted rather than where it was left.
@@ -197,6 +225,18 @@ private struct FlekZoomableScreenshot: View {
     let onDismiss: () -> Void
 
     @State private var image: UIImage?
+
+    init(photo: FlekScreenshotViewer.Photo, aspect: CGFloat, isActive: Bool, onDismiss: @escaping () -> Void) {
+        self.photo = photo
+        self.aspect = aspect
+        self.isActive = isActive
+        self.onDismiss = onDismiss
+        // There from the first frame, so the zoom transition grows the picture
+        // itself rather than the placeholder.
+        if case .asset(let name) = photo {
+            _image = State(initialValue: UIImage(named: name))
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -216,9 +256,19 @@ private struct FlekZoomableScreenshot: View {
     }
 
     /// Memory only, as in the gallery this opens from — so the shot tapped is
-    /// already there, and nothing about it is left on disk afterwards.
+    /// already there, and nothing about it is left on disk afterwards. One in
+    /// the asset catalog is simply there.
     private func load() {
-        guard image == nil, let url = URL(string: photo) else { return }
+        guard image == nil else { return }
+        let address: String
+        switch photo {
+        case .asset(let name):
+            image = UIImage(named: name)
+            return
+        case .remote(let string):
+            address = string
+        }
+        guard let url = URL(string: address) else { return }
         KingfisherManager.shared.retrieveImage(with: url, options: [.cacheMemoryOnly]) { result in
             guard case .success(let value) = result else { return }
             withAnimation(.easeOut(duration: 0.15)) { image = value.image }
@@ -486,5 +536,39 @@ private final class FlekZoomScrollView: UIScrollView {
             }
             ancestor = current.superview
         }
+    }
+}
+
+extension View {
+    /// Marks a thumbnail as the place the viewer grows out of, and shrinks back
+    /// into. Nothing to do below iOS 18, which has no such thing.
+    // Erased to AnyView: the iOS 18-only type this modifier produces would
+    // otherwise be baked into the caller's static type, which the runtime
+    // resolves before the availability check runs.
+    func screenshotZoomSource(id: Int, in namespace: Namespace.ID) -> AnyView {
+        if #available(iOS 18.0, *) {
+            return AnyView(self.matchedTransitionSource(id: id, in: namespace))
+        }
+        return AnyView(self)
+    }
+
+    /// Presents with the system's zoom transition: the shot grows out of its
+    /// thumbnail, and the drag that dismisses it — the system's own, from
+    /// anywhere on the shot — rubber-bands it back into the place it came from.
+    /// Erased to AnyView, as above.
+    func screenshotZoomTransition(id: Int, in namespace: Namespace.ID) -> AnyView {
+        if #available(iOS 18.0, *) {
+            return AnyView(self.navigationTransition(.zoom(sourceID: id, in: namespace)))
+        }
+        return AnyView(self)
+    }
+}
+
+/// Screenshots dim slightly under a finger, so it's clear they open.
+struct FlekScreenshotPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .animation(.easeOut(duration: 0.16), value: configuration.isPressed)
     }
 }

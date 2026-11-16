@@ -70,6 +70,20 @@ enum FlekSymbol {
 }
 
 enum FlekTheme {
+    /// The display the app is on, which the sizes worked out from "the screen"
+    /// are measured against.
+    ///
+    /// Not `UIScreen.main`. That is not tied to any scene, and the iPhone Duo moves
+    /// the app between its cover display and its inner one as it folds and unfolds,
+    /// so a size taken from it can be the size of the display that is switched off.
+    /// The foreground scene's own screen is the one the app is drawn on;
+    /// `UIScreen.main` only stands in before the first scene has connected.
+    static var screen: UIScreen {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.screen ?? UIScreen.main
+    }
+
     // Springboard grid
     static let gridColumns = 3
     static let gridSpacing: CGFloat = 8
@@ -106,7 +120,7 @@ enum FlekTheme {
     private static let bottomBarControlRange: ClosedRange<CGFloat> = 50...72
 
     static var bottomBarControlSize: CGFloat {
-        let screen = UIScreen.main.bounds.size
+        let screen = Self.screen.bounds.size
         // The narrow side of the screen, so that turning the device — or running
         // in a window that is wider than it is tall — does not resize the bar.
         let width = min(screen.width, screen.height)
@@ -125,6 +139,34 @@ enum FlekTheme {
     /// edge itself rather than to the safe area, so on a device with a home
     /// indicator the bar reaches back down past it.
     static let bottomBarScreenMargin: CGFloat = 28
+
+    // The side bar: the search button and the running apps stood on end in the
+    // column the iPhone Duo's vertical status bar runs down, when Personalization
+    // puts them there. The system gives no geometry for that column, so these are
+    // measured off it in iOS 27.2, folded and unfolded alike: it is centred 48pt in
+    // from the edge of the display, its pill is 56pt across, and the Wi-Fi glyph in
+    // it is 41pt.
+
+    /// From the edge of the display to the middle of the column.
+    static let sideBarCentreInset: CGFloat = 48
+    /// Across the column: the search button's diameter, and the running apps' pill —
+    /// the width of the status bar's own pill.
+    static let sideBarWidth: CGFloat = 56
+    /// A running app's icon in the column, the size of the status bar's Wi-Fi glyph.
+    static let sideBarAppIconSize: CGFloat = 41
+    /// A button in the column over an app, and in the switcher's: the size of iOS's
+    /// own buttons in that column, the back button above them among them.
+    static let sideBarButtonSize: CGFloat = 48
+    /// The glyph in the column's buttons: the same share of them as the bottom
+    /// bar's glyph is of its controls.
+    static var sideBarGlyphSize: CGFloat { sideBarWidth * 0.42 }
+    /// The glyph on a button in the column over an app: the share of it the
+    /// search button's glyph is of the search button.
+    static var sideBarButtonGlyphSize: CGFloat { sideBarButtonSize * 0.42 }
+    /// The app's icon on the app button in that column: 30pt in the 48pt circle,
+    /// leaving a ring of the button's glass round it. As large a share as the
+    /// running apps' icon is of the pill, it nearly touched the circle's edge.
+    static var sideBarButtonIconSize: CGFloat { sideBarButtonSize * 0.625 }
 
     /// A navigation control: the circle a back or close button occupies, at the
     /// size the system gives the same buttons in a navigation bar. Fixed rather
@@ -193,6 +235,76 @@ extension View {
             return AnyView(self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)))
         }
         return AnyView(self.background(FlekGlassBackground(cornerRadius: cornerRadius, tint: tint)))
+    }
+}
+
+/// Keeps the pages under it to a column of readable width on an iPad and on an
+/// iPhone Duo opened out: their displays are a tablet's width, and a page laid
+/// out for a phone otherwise stretches its rows and tiles across all of it, an
+/// iPad held sideways most of all. The column is centred, as iPadOS centres the
+/// content of a page too wide for it. Narrower than the column (FlekDeck beside
+/// another app, a folded Duo) and on an iPhone, the pages keep the system's own
+/// margins.
+///
+/// Through the scroll views' content margins rather than a narrower frame, so a
+/// page's background, its navigation bar and the scrolling itself still span the
+/// whole window, and only what scrolls is held to the column. The modifier is
+/// always there, with the system's margins when the page is narrower than the
+/// column, so folding and unfolding change a number rather than the view, and a
+/// page pushed in Settings stays where it is.
+struct FlekReadableColumn: ViewModifier {
+    /// The column's width: about the width of a page in a form sheet on iPad.
+    static let width: CGFloat = 640
+
+    @State private var available: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        let spare = available - Self.width
+        let wide = FlekDeviceModel.isDuo || UIDevice.current.userInterfaceIdiom == .pad
+        let margin: CGFloat? = wide && spare > 0 ? spare / 2 : nil
+        if #available(iOS 17.0, *) {
+            content
+                .contentMargins(.horizontal, margin, for: .scrollContent)
+                .background(widthReader)
+        } else {
+            content
+        }
+    }
+
+    @available(iOS 17.0, *)
+    private var widthReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { available = proxy.size.width }
+                .onChange(of: proxy.size.width) { _, width in available = width }
+        }
+    }
+}
+
+/// Reports the edge the system's vertical bar runs down — nil where it places
+/// none — once on appearing and again whenever the edge changes.
+///
+/// The vertical bar, and the environment value that names its edge, arrived in
+/// iOS 27.1; before that there is never one to report.
+struct FlekVerticalBarEdgeReader: View {
+    @Binding var edge: HorizontalEdge?
+
+    var body: some View {
+        if #available(iOS 27.1, *) {
+            Observer(edge: $edge)
+        }
+    }
+
+    @available(iOS 27.1, *)
+    private struct Observer: View {
+        @Environment(\.toolbarVerticalEdge) private var current
+        @Binding var edge: HorizontalEdge?
+
+        var body: some View {
+            Color.clear
+                .onAppear { edge = current }
+                .onChange(of: current) { _, new in edge = new }
+        }
     }
 }
 

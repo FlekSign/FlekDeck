@@ -130,6 +130,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State private var installerPreselectRepoURL: String?
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) var darkModeIcon = false
     @AppStorage(FlekDeckKeys.homeLayout, store: LCUtils.appGroupUserDefault) var homeLayout: String = FlekHomeLayout.grid.rawValue
+    @AppStorage(FlekDeckKeys.homeBarPosition, store: LCUtils.appGroupUserDefault) var homeBarPosition: String = FlekHomeBarPosition.bottom.rawValue
+    @AppStorage(FlekDeckKeys.glassStyle, store: LCUtils.appGroupUserDefault) var glassStyle: FlekGlassStyle = .liquid
+    /// The edge an iPhone Duo's status bar runs down; nil wherever there is none.
+    @State private var verticalBarEdge: HorizontalEdge?
 
 
     @State private var homeSaveIconExporterShow = false
@@ -170,8 +174,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     /// How the dock arrives. Normally it springs in beside the search button, but
     /// not when a minimizing window is already on its way to it: something still
     /// travelling into position is not something a window can land on, and the
-    /// window's own arrival is the animation that matters at that moment. The
-    /// icon it lands on answers with its own bounce either way.
+    /// window's own arrival is the animation that matters at that moment.
     private var dockEntranceAnimation: Animation? {
         if #available(iOS 16.0, *), MultitaskDockManager.shared.homeDockShouldSkipEntrance {
             // A single frame rather than no animation at all. The dock is inserted
@@ -185,31 +188,49 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         return .spring(response: 0.42, dampingFraction: 0.82)
     }
 
-    /// Bottom home bar: the multitask dock pill (only while apps are running)
-    /// beside a persistent search button. The search button keeps its identity
-    /// across states, so it glides as the pill springs in/out — a morph rather
-    /// than a cross-fade.
+    /// What the dock arrives with: grown out of the search button's side, or with a
+    /// window already on its way to one of its icons, only faded in where it
+    /// stands. Grown, its icons start out crowded toward the search button, and a
+    /// window that measures its icon on that first frame flies to where the dock
+    /// is only passing through: the rightmost app to the dock's own switcher
+    /// button, before its icon turns up further left.
+    private func dockTransition(anchor: UnitPoint) -> AnyTransition {
+        if #available(iOS 16.0, *), MultitaskDockManager.shared.homeDockShouldSkipEntrance {
+            return .opacity
+        }
+        return .scale(scale: 0.6, anchor: anchor).combined(with: .opacity)
+    }
+
+    /// The home bar: the multitask dock pill (only while apps are running) beside
+    /// a persistent search button — along the bottom, or stood on end in the side
+    /// column (`.vertical`). The search button keeps its identity across states,
+    /// so it glides as the pill springs in/out — a morph rather than a cross-fade.
     // Erased to AnyView: `GlassEffectContainer` and `glassEffect` are iOS 26-only
     // types, and an opaque return type would bake them into this property's static
     // type. The runtime resolves that type before it ever runs the availability
     // check, so on iOS 17.x the lookup fails and the Swift runtime traps.
-    private var homeBottomBar: AnyView {
-        if #available(iOS 26.0, *) {
+    private func homeBar(axis: Axis) -> AnyView {
+        let controlSize = axis == .horizontal ? FlekTheme.bottomBarControlSize : FlekTheme.sideBarWidth
+        let glyphSize = axis == .horizontal ? FlekTheme.bottomBarGlyphSize : FlekTheme.sideBarGlyphSize
+        // The pill grows out of the search button's side: from the end that
+        // faces it, whichever way the bar runs.
+        let pillAnchor: UnitPoint = axis == .horizontal ? .trailing : .bottom
+        if #available(iOS 26.0, *), glassStyle == .liquid {
             return AnyView(
                 GlassEffectContainer(spacing: 10) {
-                    HStack(spacing: 10) {
+                    FlekBarStack(axis: axis, spacing: 10) {
                         if showMultitaskDock {
-                            MultitaskHomeDockPill(darkModeIcon: darkModeIcon)
-                                .transition(.scale(scale: 0.6, anchor: .trailing).combined(with: .opacity))
+                            MultitaskHomeDockPill(darkModeIcon: darkModeIcon, axis: axis)
+                                .transition(dockTransition(anchor: pillAnchor))
                                 .installerBarShadow()
                         }
                         Button {
                             showSearch = true
                         } label: {
                             Image(systemName: "magnifyingglass")
-                                .font(.system(size: FlekTheme.bottomBarGlyphSize, weight: .regular))
+                                .font(.system(size: glyphSize, weight: .regular))
                                 .foregroundStyle(Color.primary.opacity(0.6))
-                                .frame(width: FlekTheme.bottomBarControlSize, height: FlekTheme.bottomBarControlSize)
+                                .frame(width: controlSize, height: controlSize)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(in: .circle)
@@ -220,13 +241,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             )
         }
         return AnyView(
-            HStack(spacing: 10) {
+            FlekBarStack(axis: axis, spacing: 10) {
                 if #available(iOS 16.0, *), showMultitaskDock {
-                    MultitaskHomeDockPill(darkModeIcon: darkModeIcon)
-                        .transition(.scale(scale: 0.6, anchor: .trailing).combined(with: .opacity))
+                    MultitaskHomeDockPill(darkModeIcon: darkModeIcon, axis: axis)
+                        .transition(dockTransition(anchor: pillAnchor))
                         .installerBarShadow()
                 }
-                FlekGlassCircleButton(systemImage: "magnifyingglass") {
+                FlekGlassCircleButton(systemImage: "magnifyingglass", size: controlSize) {
                     showSearch = true
                 }
                 .installerBarShadow()
@@ -234,8 +255,63 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             .animation(dockEntranceAnimation, value: showMultitaskDock)
         )
     }
+
+    /// Whether the search button and the running apps stand in the side column
+    /// rather than along the bottom: chosen on Personalization, and only while an
+    /// iPhone Duo's status bar is actually running down a side. Anywhere else the
+    /// bottom bar stands in.
+    private var isHomeBarOnSide: Bool {
+        homeBarPosition == FlekHomeBarPosition.side.rawValue
+            && FlekDeviceModel.isDuo && verticalBarEdge != nil
+    }
+
+    /// The bar stood on end in the column the status bar runs down: the running
+    /// apps' pill above the search button, centred on the status bar's own column
+    /// and as far from the bottom of the display as the bottom bar sits.
+    private func homeSideColumn(on edge: HorizontalEdge) -> some View {
+        Group {
+            if isEditing {
+                Button {
+                    isEditing = false
+                } label: {
+                    sideDoneLabel
+                }
+                .buttonStyle(.plain)
+            } else {
+                homeBar(axis: .vertical)
+                    .id(colorScheme)
+            }
+        }
+        .padding(edge == .leading ? .leading : .trailing,
+                 FlekTheme.sideBarCentreInset - FlekTheme.sideBarWidth / 2)
+        .padding(.bottom, FlekTheme.bottomBarScreenMargin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: edge == .leading ? .bottomLeading : .bottomTrailing)
+        .ignoresSafeArea()
+    }
+
+    /// Edit mode's Done in the side column: the checkmark alone, in a circle the
+    /// size of the search button it stands in for. Erased to AnyView — see
+    /// `homeBar(axis:)` for why.
+    private var sideDoneLabel: AnyView {
+        let label = Image(systemName: "checkmark")
+            .font(.system(size: FlekTheme.sideBarGlyphSize, weight: .semibold))
+            .foregroundStyle(Color.primary.opacity(0.75))
+            .frame(width: FlekTheme.sideBarWidth, height: FlekTheme.sideBarWidth)
+
+        if #available(iOS 26.0, *), glassStyle == .liquid {
+            return AnyView(label.glassEffect(.regular.interactive(false), in: .circle))
+        }
+        return AnyView(
+            label
+                .background(Circle().fill(.ultraThinMaterial))
+                .overlay(Circle().fill(Color.primary.opacity(0.15)))
+                .overlay(Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+        )
+    }
     @Environment(\.colorScheme) private var colorScheme
-    
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     @ObservedObject var searchContext: SearchContext
     /// The device's own bottom safe-area inset — the home indicator, if there is one.
     @State private var homeBottomSafeInset: CGFloat = LCDeviceSafeArea.bottomInset()
@@ -319,7 +395,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             // same CAFilter variable blur the installer uses at its bottom edge:
             // clear at the top, ramping to full blur at the bottom, reaching up
             // to just above the search / multitask bar.
-            if homeLayout == FlekHomeLayout.list.rawValue && !showSearch {
+            if homeLayout == FlekHomeLayout.list.rawValue && !showSearch && !isHomeBarOnSide {
                 GeometryReader { geo in
                     VariableBlurView(maxBlurRadius: 4, direction: .bottom)
                         .frame(height: geo.safeAreaInsets.bottom + 100)
@@ -331,6 +407,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
 
             if !showSearch {
+            if isHomeBarOnSide, let verticalBarEdge {
+                homeSideColumn(on: verticalBarEdge)
+            } else {
             VStack {
                 Spacer()
                 if isEditing {
@@ -344,10 +423,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     // entering edit mode does not shift the control's position.
                     .padding(.bottom, homeBottomBarInset)
                 } else {
-                    homeBottomBar
+                    homeBar(axis: .horizontal)
                         .id(colorScheme)
                         .padding(.bottom, homeBottomBarInset)
                 }
+            }
             }
             }
             }
@@ -390,13 +470,28 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
         }
         .animation(.easeOut(duration: 0.25), value: showSearch)
+        .background(FlekVerticalBarEdgeReader(edge: $verticalBarEdge))
+        // Folding or unfolding an iPhone Duo moves the app to another display,
+        // whose bottom inset need not be this one's.
+        .onChange(of: verticalBarEdge) { _ in
+            homeBottomSafeInset = LCDeviceSafeArea.bottomInset()
+        }
+        .onChange(of: horizontalSizeClass) { _ in
+            homeBottomSafeInset = LCDeviceSafeArea.bottomInset()
+        }
         .onAppear {
             homeBottomSafeInset = LCDeviceSafeArea.bottomInset()
             if !didAppear { onAppear() }
+            if #available(iOS 16.0, *) { registerSplitHooks() }
             rebuildOrderedHomeItems()
         }
         .onChange(of: sharedAppSortManager.sortedApps.count) { _ in
             rebuildOrderedHomeItems()
+        }
+        // The Apps widget shows the start of the home screen, so it follows
+        // every change to what the home screen shows and in what order.
+        .onChange(of: orderedHomeItems.map(\.displaySignature)) { _ in
+            FlekWidgetSync.shared.update(homeItems: orderedHomeItems)
         }
         .onChange(of: installQueue.items.count) { _ in
             rebuildOrderedHomeItems()
@@ -769,7 +864,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         ))
     }
 
-    /// Erased to AnyView — see `homeBottomBar` for why.
+    /// Erased to AnyView — see `homeBar(axis:)` for why.
     private var doneButtonLabel: AnyView {
         let label = HStack(spacing: 6) {
             Image(systemName: "checkmark")
@@ -781,7 +876,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         .padding(.horizontal, 18)
         .frame(height: FlekTheme.bottomBarControlSize)
 
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), glassStyle == .liquid {
             return AnyView(label.glassEffect(.regular.interactive(false)))
         }
         return AnyView(
@@ -812,12 +907,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     onDropCompleted: { persistHomeOrder() },
                     onCancelInstall: { installQueue.cancel($0) },
                     showsSingleBadge: { _ = launchModeVersion; return FlekLaunchModeStore.shared.showsSingleBadge(for: $0) },
+                    barOnSide: isHomeBarOnSide,
                     contextMenu: { item in homeContextMenu(for: item) }
                 )
             } else {
                 LCSpringboardRepresentable(
                     items: $orderedHomeItems,
                     darkModeIcon: darkModeIcon,
+                    drawsGlass: glassStyle == .liquid,
                     isEditing: $isEditing,
                     onTap: { handleHomeTap($0) },
                     onDelete: { item in
@@ -830,9 +927,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 // Grid keeps the original fixed insets (list handles its own).
                 // Shared with the grid maths, which works the page size back out
                 // from the screen when there is no view to measure.
-                .padding(.top, LCSpringboardPageCell.gridTopPadding)
-                .padding(.bottom, LCSpringboardPageCell.gridBottomPadding(
-                    safeAreaBottom: homeBottomSafeInset))
+                //
+                // With the bar in the side column, the grid runs on down into the
+                // bottom inset to a margin measured from the display's edge — so
+                // the padding goes negative where the inset is deeper than that.
+                .padding(.top, isHomeBarOnSide
+                         ? LCSpringboardPageCell.sideBarGridTopPadding
+                         : LCSpringboardPageCell.gridTopPadding)
+                .padding(.bottom, isHomeBarOnSide
+                         ? LCSpringboardPageCell.sideBarGridBottomMargin - homeBottomSafeInset
+                         : LCSpringboardPageCell.gridBottomPadding(safeAreaBottom: homeBottomSafeInset))
             }
         }
     }
@@ -1104,13 +1208,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     /// has in front of it. Pages the stored sizes say nothing about are this big.
     private var homeItemsPerPage: Int {
         // Mirrors LCSpringboardViewController.recalculateItemsPerPage
-        let screenBounds = UIScreen.main.bounds
+        let screenBounds = FlekTheme.screen.bounds
         let safeArea = UIApplication.shared.connectedScenes
             .compactMap { ($0 as? UIWindowScene)?.windows.first?.safeAreaInsets }
             .first ?? UIEdgeInsets(top: 59, left: 0, bottom: 34, right: 0)
         let pageSize = LCSpringboardPageCell.estimatedPageSize(
             screenSize: screenBounds.size,
-            safeAreaInsets: safeArea
+            safeAreaInsets: safeArea,
+            barOnSide: isHomeBarOnSide
         )
         return LCSpringboardPageCell.itemsPerPage(forPageSize: pageSize)
     }
@@ -1424,7 +1529,128 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @ViewBuilder
     // MARK: - UIKit Context Menu (for UIKit springboard)
 
+    /// An icon's menu, with "Open in Split View" added where two apps can be put
+    /// side by side: on an iPad or an iPhone Duo opened out, held wide. An app
+    /// paired with another also has the app it opens beside, and Unpair; one
+    /// that is not has Pair With, wherever two apps can ever go side by side.
     func homeUIMenu(for item: FlekHomeItem) -> UIMenu? {
+        let menu = homeUIMenuItems(for: item)
+        var added: [UIMenuElement] = []
+        if #available(iOS 16.0, *), let split = openInSplitViewAction(for: item) { added.append(split) }
+        if let pair = splitPairMenu(for: item) { added.append(pair) }
+        guard !added.isEmpty else { return menu }
+        var children = menu?.children ?? []
+        // Below the launch modes where an app's menu starts with them.
+        let index = (children.first as? UIMenu)?.options.contains(.displayInline) == true ? 1 : 0
+        children.insert(contentsOf: added, at: index)
+        return UIMenu(title: menu?.title ?? "", children: children)
+    }
+
+    /// "Paired with" the app this one opens beside, over Unpair: the pair the
+    /// icon marks under its title. Not paired, Pair With instead.
+    private func splitPairMenu(for item: FlekHomeItem) -> UIMenu? {
+        guard homeItemName(item) != nil else { return nil }
+        guard let partnerID = item.splitPartnerID,
+              let name = orderedHomeItems.first(where: { $0.id == partnerID }).flatMap(homeItemName) else {
+            return pairWithMenu(for: item)
+        }
+        let unpair = UIAction(
+            title: "lc.flek.splitMenu.unpair".loc,
+            image: UIImage(systemName: "personalhotspot.slash") ?? UIImage(systemName: "xmark")
+        ) { _ in
+            FlekSplitPairStore.shared.forget(item.id)
+        }
+        return UIMenu(title: String(format: "lc.flek.splitMenu.pairedWith %@".loc, name),
+                      options: .displayInline, children: [unpair])
+    }
+
+    /// Pair With: the home screen's other apps and built-in pages, A to Z, each
+    /// with its icon, to choose the one this opens beside from now on. This one
+    /// takes the left, as Open in Split View puts it, and the one chosen the
+    /// right; the divider's menu swaps them. One paired already says with which,
+    /// as choosing it takes it from that pair. Offered wherever two apps can go
+    /// side by side, held wide now or not: the pair is kept for when they can.
+    private func pairWithMenu(for item: FlekHomeItem) -> UIMenu? {
+        guard #available(iOS 16.0, *), MultitaskDockManager.shared.supportsSplit else { return nil }
+        let named = orderedHomeItems.compactMap { other in homeItemName(other).map { (item: other, name: $0) } }
+        let names = Dictionary(named.map { ($0.item.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let choices = named
+            .filter { $0.item.id != item.id }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        guard !choices.isEmpty else { return nil }
+        let darkIcons = darkModeIcon
+        // Drawn once the list is opened rather than with every long press: an
+        // icon for each app on the home screen.
+        let list = UIDeferredMenuElement { completion in
+            let store = FlekSplitPairStore.shared
+            completion(choices.map { choice -> UIMenuElement in
+                let icon = LCSpringboardIconCell.smallIcon(for: choice.item, size: 24, darkMode: darkIcons)
+                // The pair choosing it takes it from, if it is in one.
+                let subtitle = store.partner(of: choice.item.id).flatMap { names[$0] }
+                    .map { String(format: "lc.flek.splitMenu.pairedWith %@".loc, $0) }
+                return UIAction(title: choice.name, subtitle: subtitle,
+                                image: icon?.withRenderingMode(.alwaysOriginal)) { _ in
+                    store.pair(item.id, choice.item.id)
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            })
+        }
+        let menu = UIMenu(title: "lc.flek.splitMenu.pairWith".loc, image: UIImage(systemName: "link"),
+                          children: [list])
+        menu.subtitle = "lc.flek.splitMenu.pairDetail".loc
+        return menu
+    }
+
+    /// The name under an app's or built-in page's icon; nil for anything else
+    /// on the home screen, which can't be paired or opened beside another.
+    private func homeItemName(_ item: FlekHomeItem) -> String? {
+        switch item {
+        case .defaultApp(let kind): return kind.title
+        case .installed(let app): return app.appInfo.displayName() ?? ""
+        default: return nil
+        }
+    }
+
+    @available(iOS 16.0, *)
+    private func openInSplitViewAction(for item: FlekHomeItem) -> UIAction? {
+        switch item {
+        case .defaultApp, .installed: break
+        default: return nil
+        }
+        guard MultitaskDockManager.shared.canSplitNow else { return nil }
+        return UIAction(
+            title: "lc.flek.openInSplitView".loc,
+            image: UIImage(systemName: "rectangle.split.2x1")
+        ) { _ in
+            MultitaskDockManager.shared.openInSplitView(item)
+        }
+    }
+
+    /// Lets the multitask dock list the home screen's apps, for the side of the
+    /// screen choosing one, and open them there.
+    @available(iOS 16.0, *)
+    private func registerSplitHooks() {
+        let dock = MultitaskDockManager.shared
+        dock.splitHomeItems = { orderedHomeItems }
+        dock.splitOpenHomeItem = { item in openHomeItemInWindow(item) }
+    }
+
+    /// Opens a home item in a window of its own, whatever launch mode it is set
+    /// to: on a side of the screen an app can only be a window.
+    @available(iOS 16.0, *)
+    private func openHomeItemInWindow(_ item: FlekHomeItem) {
+        switch item {
+        case .defaultApp(let kind):
+            openInternalPageForKind(kind)
+        case .installed(let app):
+            FlekLaunchTracker.shared.markLaunched(app)
+            Task { await launchHomeApp(app, parallel: true) }
+        default:
+            break
+        }
+    }
+
+    private func homeUIMenuItems(for item: FlekHomeItem) -> UIMenu? {
         switch item {
         case .defaultApp(let kind):
             guard kind != .settings && kind != .installer else { return nil }
@@ -2134,7 +2360,18 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             throw error
         }
         if let replacedBundleBackup {
-            try? fm.removeItem(at: replacedBundleBackup)
+            // Out of the Applications folder in one rename, then deleted on a
+            // queue of its own: a bundle runs to thousands of files, and removing
+            // them here held the main thread as the install finished. rename(2)
+            // rather than a move, which across volumes would copy the whole app.
+            let discarded = fm.temporaryDirectory.appendingPathComponent("lc_replaced_\(UUID().uuidString)")
+            if rename(replacedBundleBackup.path, discarded.path) == 0 {
+                DispatchQueue.global(qos: .utility).async {
+                    try? FileManager().removeItem(at: discarded)
+                }
+            } else {
+                try? fm.removeItem(at: replacedBundleBackup)
+            }
         }
         let finalNewApp = LCAppInfo(bundlePath: outputFolder.path)
         finalNewApp?.relativeBundlePath = appRelativePath
@@ -2146,20 +2383,21 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         
         // patch and sign it
-        var signError : String? = nil
-        var signSuccess = false
-        await withUnsafeContinuation({ c in
-            if appToReplace?.uiDontSign ?? false || LCUtils.appGroupUserDefault.bool(forKey: "LCDontSignApp") {
-                finalNewApp.dontSign = true
+        if appToReplace?.uiDontSign ?? false || LCUtils.appGroupUserDefault.bool(forKey: "LCDontSignApp") {
+            finalNewApp.dontSign = true
+        }
+        // On a queue of its own: before the signer takes over, patching goes
+        // through every file of the bundle twice, opening each one, which for a
+        // large app held the main thread, and the screen with it, for seconds.
+        let (signSuccess, signError) = await withUnsafeContinuation { (c: UnsafeContinuation<(Bool, String?), Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                finalNewApp.patchExecAndSignIfNeed(completionHandler: { success, error in
+                    c.resume(returning: (success, error))
+                }, progressHandler: { signProgress in
+                    installProgress.addChild(signProgress!, withPendingUnitCount: 20)
+                }, forceSign: false)
             }
-            finalNewApp.patchExecAndSignIfNeed(completionHandler: { success, error in
-                signError = error
-                signSuccess = success
-                c.resume()
-            }, progressHandler: { signProgress in
-                installProgress.addChild(signProgress!, withPendingUnitCount: 20)
-            }, forceSign: false)
-        })
+        }
         
         // we leave it unsigned even if signing failed
         if let signError {
@@ -2193,6 +2431,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             finalNewApp.fixLocalNotification = appToReplace.appInfo.fixLocalNotification
             finalNewApp.lastLaunched = appToReplace.appInfo.lastLaunched
             finalNewApp.jitLaunchScriptJs = appToReplace.appInfo.jitLaunchScriptJs
+            finalNewApp.jitLaunchScriptName = appToReplace.appInfo.jitLaunchScriptName
             finalNewApp.multitaskSpecified = appToReplace.appInfo.multitaskSpecified
             finalNewApp.classicMode = appToReplace.appInfo.classicMode
             finalNewApp.autoSaveDisabled = false
@@ -2461,6 +2700,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             // app's launch mode and never shows as new.
             FlekLaunchModeStore.shared.forget(app)
             FlekLaunchTracker.shared.forget(app)
+            // Its pair too: the app it opened beside would go on showing the
+            // link, and offering to unpair from an app that is gone.
+            FlekSplitPairStore.shared.forget(FlekHomeItem.installedID(for: app.appInfo))
 
             // The app's slot in the home order is deliberately left alone here.
             // `rebuildOrderedHomeItems` is what takes an app off the grid: an id
@@ -2799,3 +3041,19 @@ private struct OrientationLockModifier: ViewModifier {
     }
 }
 
+
+/// An HStack or a VStack, for the home bar running along the bottom or down the
+/// side column.
+private struct FlekBarStack<Content: View>: View {
+    let axis: Axis
+    let spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if axis == .horizontal {
+            HStack(spacing: spacing, content: content)
+        } else {
+            VStack(spacing: spacing, content: content)
+        }
+    }
+}

@@ -35,6 +35,11 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
 
         LCPath.clearStaleShareInbox()
 
+        FlekImageMemory.configureCaches()
+
+        // Split View's tips, on an iPad or an iPhone Duo (see `SplitTips`).
+        if #available(iOS 26.0, *) { SplitTips.configure() }
+
         // Before the app list is read. A private app opened in a window is staged
         // into the app group until the window closes, so a FlekDeck killed with
         // windows open leaves copies behind, and builds before the staging folder
@@ -62,21 +67,14 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
                 LCPath.recoverInterruptedReplaces(in: LCPath.bundlePath, contents: appDirs)
                 appDirs = try fm.contentsOfDirectory(atPath: LCPath.bundlePath.path)
             }
-            for appDir in appDirs {
-                if !appDir.hasSuffix(".app") {
-                    continue
-                }
-                let newApp = LCAppInfo(bundlePath: "\(LCPath.bundlePath.path)/\(appDir)")!
-                newApp.relativeBundlePath = appDir
-                newApp.isShared = false
-                let model = LCAppModel(appInfo: newApp)
-                if newApp.isHidden {
+            for model in Self.loadApps(appDirs, in: LCPath.bundlePath, isShared: false) {
+                if model.appInfo.isHidden {
                     tempHiddenApps.append(model)
                 } else {
                     tempApps.append(model)
-                    tempURLSchemes?.formUnion(newApp.urlSchemes() as! [String])
+                    tempURLSchemes?.formUnion(model.appInfo.urlSchemes() as! [String])
                 }
-                if newApp.is32bitEmulator {
+                if model.appInfo.is32bitEmulator {
                     tempArm32EmuApps.append(model)
                 }
             }
@@ -87,21 +85,14 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
                     LCPath.recoverInterruptedReplaces(in: LCPath.lcGroupBundlePath, contents: appDirsShared)
                     appDirsShared = try fm.contentsOfDirectory(atPath: LCPath.lcGroupBundlePath.path)
                 }
-                for appDir in appDirsShared {
-                    if !appDir.hasSuffix(".app") {
-                        continue
-                    }
-                    let newApp = LCAppInfo(bundlePath: "\(LCPath.lcGroupBundlePath.path)/\(appDir)")!
-                    newApp.relativeBundlePath = appDir
-                    newApp.isShared = true
-                    let model = LCAppModel(appInfo: newApp)
-                    if newApp.isHidden {
+                for model in Self.loadApps(appDirsShared, in: LCPath.lcGroupBundlePath, isShared: true) {
+                    if model.appInfo.isHidden {
                         tempHiddenApps.append(model)
                     } else {
                         tempApps.append(model)
-                        tempURLSchemes?.formUnion(newApp.urlSchemes() as! [String])
+                        tempURLSchemes?.formUnion(model.appInfo.urlSchemes() as! [String])
                     }
-                    if newApp.is32bitEmulator {
+                    if model.appInfo.is32bitEmulator {
                         tempArm32EmuApps.append(model)
                     }
                 }
@@ -140,6 +131,29 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
         if let tempURLSchemes {
             UserDefaults.lcShared().set(Array(tempURLSchemes), forKey: "LCGuestURLSchemes")
         }
+    }
+    
+    /// The apps in one Applications folder, in folder order.
+    ///
+    /// FlekDeck starts afresh every time an app run in single mode is left, and
+    /// the list is read before anything shows. Each app is a few small files —
+    /// its Info.plist, its settings, one file per data container — and read one
+    /// after another on the main thread, a phone with many apps waited for every
+    /// one of them on every return. They are read side by side instead: no app's
+    /// reading touches another's files.
+    private static func loadApps(_ contents: [String], in folder: URL, isShared: Bool) -> [LCAppModel] {
+        let names = contents.filter { $0.hasSuffix(".app") }
+        var models = [LCAppModel?](repeating: nil, count: names.count)
+        models.withUnsafeMutableBufferPointer { buffer in
+            let slots = buffer
+            DispatchQueue.concurrentPerform(iterations: names.count) { index in
+                let appInfo = LCAppInfo(bundlePath: "\(folder.path)/\(names[index])")!
+                appInfo.relativeBundlePath = names[index]
+                appInfo.isShared = isShared
+                slots[index] = LCAppModel(appInfo: appInfo)
+            }
+        }
+        return models.compactMap { $0 }
     }
     
     var body: some Scene {

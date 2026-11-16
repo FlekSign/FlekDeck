@@ -10,6 +10,7 @@
 #import "../LiveContainerSwiftUI/Utilities/LCUtils.h"
 #import "PiPManager.h"
 #import "LCGuestCaptureNotice.h"
+#import "LCGuestContactsAccess.h"
 #import "Localization.h"
 #import "LCSharedUtils.h"
 #import "utils.h"
@@ -442,6 +443,11 @@ static void LCRecoverLegacyStagedCopies(NSURL *appGroupLC, NSURL *docURL) {
 @property(nonatomic) NSNumber *pipReadyToken;
 /// Raises the Single Mode sheet when the guest is refused the microphone.
 @property(nonatomic) LCGuestCaptureNotice *captureNotice;
+/// Asks iOS for contacts on the guest's behalf, which the guest cannot finish.
+@property(nonatomic) LCGuestContactsAccess *contactsAccess;
+/// Registration on the guest's report of where its own side bar sits.
+@property(nonatomic) NSNumber *sideBarToken;
+@property(nonatomic) NSNumber *touchToken;
 @end
 
 /// The device orientation to hand a guest, derived from the orientation UIKit has
@@ -640,6 +646,9 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 // clears self.delegate on teardown, and this callback still has to reach the
 // object that asked for the launch.
 - (void)beginExtensionRequestWithItem:(NSExtensionItem *)item delegate:(id<AppSceneViewControllerDelegate>)delegate {
+    // Before the guest starts, unlike the channels that wait for its scene: an
+    // app can ask for contacts as soon as it launches.
+    [self beginHandlingGuestContactsRequests];
     [_extension beginExtensionRequestWithInputItems:@[item] completion:^(NSUUID *identifier) {
         if(identifier) {
             [MultitaskManager registerMultitaskContainerWithContainer:self.dataUUID];
@@ -657,17 +666,32 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 }
 
 - (void)setUpAppPresenter {
+    // Queued as the guest started, so the guest can be gone by now: closed with
+    // its window, or ended as it started (a crash at launch). A scene for a
+    // process that is not there is a trap in FrontBoard that takes FlekDeck
+    // down with it, so the window closes as for any guest that ends. A guest
+    // still running but not found is ended too, rather than left behind.
+    if(self.isAppTerminationCleanUpCalled) return;
     RBSProcessPredicate* predicate = [PrivClass(RBSProcessPredicate) predicateMatchingIdentifier:@(self.pid)];
     FBProcessManager *manager = [PrivClass(FBProcessManager) sharedInstance];
     // At this point, the process is spawned and we're ready to create a scene to render in our app
     RBSProcessHandle* processHandle = [PrivClass(RBSProcessHandle) handleForPredicate:predicate error:nil];
+    if(!processHandle.identity) {
+        [self terminate];
+        return;
+    }
     [manager registerProcessForAuditToken:processHandle.auditToken];
     UIApplicationSceneSpecification *specification = [UIApplicationSceneSpecification specification];
     
     void (^updateSceneSettings)(id) = ^void(UIMutableApplicationSceneSettings *settings) {
         settings.canShowAlerts = YES;
         settings.cornerRadiusConfiguration = [[PrivClass(BSCornerRadiusConfiguration) alloc] initWithTopLeft:self.view.layer.cornerRadius bottomLeft:self.view.layer.cornerRadius bottomRight:self.view.layer.cornerRadius topRight:self.view.layer.cornerRadius];
-        settings.displayConfiguration = UIScreen.mainScreen.displayConfiguration;
+        // The display the host window is on, not the main screen. The iPhone Duo
+        // has two built-in displays, and a guest handed the other one's
+        // configuration lays itself out for a display it is not on. The main
+        // screen only stands in while the host has no window yet.
+        UIScreen *hostScreen = self.view.window.windowScene.screen ?: UIScreen.mainScreen;
+        settings.displayConfiguration = hostScreen.displayConfiguration;
         settings.foreground = YES;
         // Baseline geometry for a windowed scene. A maximized one is re-derived
         // by the delegate at the bottom of this block, which has the last word.
@@ -812,6 +836,8 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 
     [self beginObservingGuestPiPRequests];
     [self beginObservingGuestCaptureRefusals];
+    [self beginObservingGuestSideBar];
+    [self beginObservingGuestTouches];
 
     if([self.delegate respondsToSelector:@selector(appSceneVCDidPresentScene:)]) {
         [self.delegate appSceneVCDidPresentScene:self];
@@ -892,6 +918,13 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
                 // Only ever written with a real answer; unknown leaves it as it is.
                 if(guestDevice != UIDeviceOrientationUnknown) settings.deviceOrientation = guestDevice;
             }
+            // Folding or unfolding an iPhone Duo moves the host to its other
+            // built-in display without recreating this scene, so the guest is told
+            // which display it is on now as well as how big it is.
+            id display = self.view.window.windowScene.screen.displayConfiguration;
+            if(display && ![display isEqual:settings.displayConfiguration]) {
+                settings.displayConfiguration = display;
+            }
             CGRect frame = self.view.frame;
             if(!self.usesHostingControllerAPI) {
                 frame.size.width /= self.scaleRatio;
@@ -964,8 +997,12 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
 
     [_audio invalidate];
     [self endObservingGuestPiPRequests];
+    [self endObservingGuestSideBar];
+    [self endObservingGuestTouches];
     [_captureNotice invalidate];
     _captureNotice = nil;
+    [_contactsAccess invalidate];
+    _contactsAccess = nil;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         // Bring the guest's container back and release the staged bundle. This
@@ -1080,6 +1117,78 @@ static UIDeviceOrientation LCDeviceOrientationForInterface(UIInterfaceOrientatio
     if(self.captureNotice) return;
     self.captureNotice = [[LCGuestCaptureNotice alloc] initWithDataUUID:self.dataUUID];
     self.captureNotice.hostViewController = self;
+}
+
+/// Asks iOS for contacts when the guest wants to.
+///
+/// Since iOS 18 the contacts permission is asked in two steps, and iOS shows the
+/// second — share all contacts or pick some — only to an app's own process. A
+/// guest in a window is an app extension, so its own request stops after the
+/// first step and the app is refused, over and over. LCGuestContacts hands the
+/// request here; the host asks instead and gets both steps over FlekDeck, and
+/// the guest then reads the answer, which is FlekDeck's permission in either
+/// mode.
+- (void)beginHandlingGuestContactsRequests {
+    if(self.contactsAccess) return;
+    self.contactsAccess = [[LCGuestContactsAccess alloc] initWithDataUUID:self.dataUUID];
+}
+
+/// Listens for the guest's report of where its own side bar sits.
+///
+/// On an iPhone Duo the app's tab bar and other items stand in the column the
+/// status bar runs down, the one the multitask bar's side column stands in, and
+/// only the app can see where they are. LCGuestSideBar measures them and posts
+/// them here; the dock keeps its column clear of them.
+///
+/// Registered once the guest is running, which is the earliest it can answer.
+- (void)beginObservingGuestSideBar {
+    if(self.sideBarToken) return;
+    if(@available(iOS 27.1, *)) {} else return;
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.sidebar.%@", self.dataUUID];
+    __weak typeof(self) weakSelf = self;
+    int token = 0;
+    if(notify_register_dispatch(name.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
+        uint64_t state = 0;
+        notify_get_state(t, &state);
+        [weakSelf guestSideBarChanged:state];
+    }) != NOTIFY_STATUS_OK) return;
+    self.sideBarToken = @(token);
+    // The guest may have answered before anyone was listening.
+    uint64_t state = 0;
+    notify_get_state(token, &state);
+    [self guestSideBarChanged:state];
+}
+
+- (void)guestSideBarChanged:(uint64_t)state {
+    [MultitaskDockManager.shared setGuestSideBar:state forAppUUID:self.dataUUID];
+}
+
+/// Listens for the guest's word that it has been touched: with two apps side by
+/// side on an iPhone Duo, that makes it the one in use. Its touches go to it
+/// straight, so the host has no other way to know. See LCGuestSideBar.m.
+- (void)beginObservingGuestTouches {
+    if(self.touchToken) return;
+    if(@available(iOS 27.1, *)) {} else return;
+    NSString *name = [NSString stringWithFormat:@"com.kdt.livecontainer.touch.%@", self.dataUUID];
+    NSString *dataUUID = self.dataUUID;
+    int token = 0;
+    if(notify_register_dispatch(name.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
+        [MultitaskDockManager.shared guestTouched:dataUUID];
+    }) != NOTIFY_STATUS_OK) return;
+    self.touchToken = @(token);
+}
+
+- (void)endObservingGuestTouches {
+    if(!self.touchToken) return;
+    notify_cancel(self.touchToken.intValue);
+    self.touchToken = nil;
+}
+
+- (void)endObservingGuestSideBar {
+    if(!self.sideBarToken) return;
+    notify_cancel(self.sideBarToken.intValue);
+    self.sideBarToken = nil;
+    [MultitaskDockManager.shared setGuestSideBar:0 forAppUUID:self.dataUUID];
 }
 
 - (void)endObservingGuestPiPRequests {
